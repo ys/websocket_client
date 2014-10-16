@@ -44,6 +44,8 @@ test_text_frames(_) ->
     {ok, Pid} = ws_client:start_link(),
     %% Short message
     Short = short_msg(),
+    %% TODO We need a sync point here
+    timer:sleep(500),
     ws_client:send_text(Pid, Short),
     {text, Short} = ws_client:recv(Pid),
     %% Payload length greater than 125 (actual 150).
@@ -66,6 +68,8 @@ test_binary_frames(_) ->
     {ok, Pid} = ws_client:start_link(),
     %% Short message
     Short = short_msg(),
+    %% TODO sync point
+    timer:sleep(500),
     ws_client:send_binary(Pid, Short),
     {binary, Short} = ws_client:recv(Pid),
     %% Payload length greater than 125 (actual 150).
@@ -83,6 +87,8 @@ test_control_frames(_) ->
     {ok, Pid} = ws_client:start_link(),
     %% Send ping with short message
     Short = short_msg(),
+    %% TODO FIXME sync point again
+    timer:sleep(500),
     ws_client:send_ping(Pid, Short),
     {pong, Short} = ws_client:recv(Pid),
     %% Server will echo the ping as well

@@ -1,35 +1,85 @@
-%% @author Jeremy Ong
-%% @doc Erlang websocket client
 -module(websocket_client).
+%% @author Jeremy Ong
+%% @author Michael Coles
+%% @doc Erlang websocket client (FSM implementation)
 
--export([
-         start_link/3,
-         start_link/4,
-         cast/2,
-         send/2
-        ]).
+-behaviour(gen_fsm).
+%-compile([export_all]).
 
--export([ws_client_init/7]).
+-include("websocket_req.hrl").
 
--type opt() :: {async_start, boolean()}
-             | {extra_headers, [{string() | binary(), string() | binary()}]}
-             .
+-export([start_link/3]).
+-export([cast/2]).
+-export([send/2]).
 
--type opts() :: [opt()].
+-export([init/1]).
+-export([terminate/3]).
+-export([handle_event/3]).
+-export([handle_sync_event/4]).
+-export([handle_info/3]).
+-export([code_change/4]).
+
+% States
+-export([disconnected/2]).
+-export([disconnected/3]).
+-export([connected/2]).
+-export([connected/3]).
+-export([handshaking/2]).
+-export([handshaking/3]).
+
+-type state_name() :: atom().
+
+-type state() :: any().
+-type keepalive() :: integer().
+-type close_type() :: normal | error | remote.
+
+-callback init(list()) ->
+    {ok, state()}
+        | {ok, state(), keepalive()}.
+
+-callback onconnect(websocket_req:req(), state()) ->
+    {ok, state()}
+        | {reply, websocket_req:frame(), state()}
+        | {close, binary(), state()}.
+
+-callback websocket_handle({text | binary | ping | pong, binary()}, websocket_req:req(), state()) ->
+    {ok, state()}
+        | {reply, websocket_req:frame(), state()}
+        | {close, binary(), state()}.
+
+-callback websocket_info(any(), websocket_req:req(), state()) ->
+    {ok, state()}
+        | {reply, websocket_req:frame(), state()}
+        | {close, binary(),  state()}.
+
+-callback websocket_terminate({close_type(), term()} | {close_type(), integer(), binary()},
+                              websocket_req:req(), state()) ->
+    ok.
+
+-record(context,
+        {
+         wsreq     :: websocket_req:req(),
+         transport :: #transport{},
+         headers   :: list({string(), string()}),
+         target    :: {Proto :: ws | wss,
+                      Host :: string(), Port :: non_neg_integer(),
+                      Path :: string()},
+         handler   :: {module(), HState :: term()},
+         buffer = <<>> :: binary()
+        }).
 
 %% @doc Start the websocket client
--spec start_link(URL :: string(), Handler :: module(), HandlerArgs :: list()) ->
-                        {ok, pid()} | {error, term()}.
-start_link(URL, Handler, HandlerArgs) ->
-    start_link(URL, Handler, HandlerArgs, []).
+-spec start_link(URL :: string(), Handler :: module(), Args :: list()) ->
+    {ok, pid()} | {error, term()}.
+start_link(URL, Handler, Args) ->
+    start_link(URL, Handler, Args, []).
 
 start_link(URL, Handler, HandlerArgs, AsyncStart) when is_boolean(AsyncStart) ->
     start_link(URL, Handler, HandlerArgs, [{async_start, AsyncStart}]);
 start_link(URL, Handler, HandlerArgs, Opts) when is_list(Opts) ->
     case http_uri:parse(URL, [{scheme_defaults, [{ws,80},{wss,443}]}]) of
         {ok, {Protocol, _, Host, Port, Path, Query}} ->
-            proc_lib:start_link(?MODULE, ws_client_init,
-                                [Handler, Protocol, Host, Port, Path ++ Query, HandlerArgs, Opts]);
+            gen_fsm:start_link(?MODULE, [Protocol, Host, Port, Path ++ Query, Handler, HandlerArgs, Opts], [{dbg, [trace]}]);
         {error, _} = Error ->
             Error
     end.
@@ -38,90 +88,258 @@ start_link(URL, Handler, HandlerArgs, Opts) when is_list(Opts) ->
 -spec cast(Client :: pid(), Frame :: websocket_req:frame()) ->
                   ok.
 cast(Client, Frame) ->
-    Client ! {cast, Frame},
+    gen_fsm:send_event(Client, {cast, Frame}).
+
+-spec init(list(any())) ->
+    {ok, state_name(), #context{}}
+    %% NB DO NOT try to use Timeout to do keepalive.
+    | {stop, Reason :: term()}.
+init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
+    Transport =
+        case Protocol of
+            wss ->
+                #transport{
+                   mod = ssl,
+                   name = ssl,
+                   closed = ssl_closed,
+                   error = ssl_error,
+                   opts = [
+                           {mode, binary},
+                           {active, true},
+                           {verify, verify_none},
+                           {packet, 0}
+                          ]};
+            ws  ->
+                #transport{
+                    mod = gen_tcp,
+                    name = tcp,
+                    closed = tcp_closed,
+                    error = tcp_error,
+                    opts = [
+                            binary,
+                            {active, true},
+                            {packet, 0}
+                           ]}
+        end,
+    {ok, HState} = Handler:init(HandlerArgs), %% TODO More rigorous checks of return values
+                                       %% e.g. {error, Reason}
+    AsyncStart = proplists:get_value(async_start, Opts, true),
+    AsyncStart andalso gen_fsm:send_event(self(), connect),
+    {ok, disconnected, #context{
+                          transport = Transport,
+                          headers = proplists:get_value(extra_headers, Opts, []),
+                          target  = {Protocol, Host, Port, Path},
+                          handler = {Handler, HState}
+                         }}.
+
+-spec terminate(Reason :: term(), state_name(), #context{}) -> ok.
+%% TODO Use Reason!!
+terminate(_Reason, _StateName, #context{wsreq=undefined}) ->
+    ok;
+terminate(_Reason, _StateName,
+          #context{
+             transport=T,
+             wsreq=WSReq
+            }) ->
+    case websocket_req:socket(WSReq) of
+        undefined -> ok;
+        Socket ->
+            _ = (T#transport.mod):close(Socket)
+    end,
     ok.
 
-%% @doc Create socket, execute handshake, and enter loop
--spec ws_client_init(Handler :: module(), Protocol :: websocket_req:protocol(),
-                     Host :: string(), Port :: inet:port_number(), Path :: string(),
-                     Args :: list(), Opts :: opts()) ->
-                            no_return().
-ws_client_init(Handler, Protocol, Host, Port, Path, Args, Opts) ->
-    Transport = case Protocol of
-                    wss ->
-                        ssl;
-                    ws ->
-                        gen_tcp
+-spec handle_event(Event :: term(), state_name(), #context{}) ->
+    {next_state, state_name(), #context{}}
+    | {stop, Reason :: term(), #context{}}.
+handle_event(_Event, State, Context) ->
+    {next_state, State, Context}. %% i.e. ignore, do nothing
+
+-spec handle_sync_event(Event :: term(), From :: pid(), state_name(), #context{}) ->
+    {next_state, state_name(), #context{}}
+    | {reply, Reply :: term(), state_name(), #context{}}
+    | {stop, Reason :: term(), #context{}}
+    | {stop, Reason :: term(), Reply :: term(), #context{}}.
+handle_sync_event(Event, {_From, Tag}, State, Context) ->
+    {reply, {noop, Event, Tag}, State, Context}.
+
+-spec handle_info(Info :: term(), state_name(), #context{}) ->
+    {next_state, state_name(), #context{}}
+    | {stop, Reason :: term(), #context{}}.
+handle_info(keepalive, KAState, #context{ wsreq=WSReq }=Context)
+  when KAState =:= handshaking; KAState =:= connected ->
+    [KeepAlive, KATimer] =
+        websocket_req:get([keepalive, keepalive_timer], WSReq),
+    case KATimer of
+        undefined -> ok;
+        _ -> erlang:cancel_timer(KATimer)
+    end,
+    ok = send({ping, <<>>}, WSReq),
+    NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
+    WSReq1 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq),
+    {next_state, KAState, Context#context{wsreq=WSReq1}};
+%% TODO Move Socket into #transport{} from #websocket_req{} so that we can
+%% match on it here
+handle_info({TransClosed, _Socket}, _State,
+            #context{
+               transport=#transport{ closed=TransClosed },
+               wsreq=WSReq,
+               handler={Handler, HState0}
+              }=Context) ->
+    ok = websocket_close(WSReq, Handler, HState0, {remote, closed}),
+    {stop, socket_closed, Context};
+handle_info({TransError, _Socket, Reason},
+            _AnyState,
+            #context{
+               transport=#transport{ error=TransError},
+               handler={Handler, HState0},
+               wsreq=WSReq
+              }=Context) ->
+    ok = websocket_close(WSReq, Handler, HState0, {TransError, Reason}),
+    {stop, {socket_error, Reason}, Context};
+handle_info({Trans, Socket, Data},
+            handshaking,
+            #context{
+               transport=#transport{ name=Trans },
+               wsreq=WSReq,
+               buffer=Buffer
+              }=Context) ->
+    MaybeHandshakeResp = << Buffer/binary, Data/binary >>,
+    case re:run(MaybeHandshakeResp, "\\r\\n\\r\\n") of
+        {match, _} ->
+            % TODO: I don't think state transitions should happen from handle_info
+            case validate_handshake(MaybeHandshakeResp, websocket_req:key(WSReq)) of
+                {error,_}=Error ->
+                    {stop, Error, Context};
+                {ok, Remaining} ->
+                    %% TODO This is nasty and hopefully there's a nicer way
+                    self() ! {Trans, Socket, Remaining},
+                    {next_state, connected, Context#context{buffer = <<>>}}
+
+            end;
+        _ ->
+            {next_state, handshaking, Context#context{buffer=MaybeHandshakeResp}}
+    end;
+handle_info({Trans, _Socket, Data},
+            connected,
+            #context{
+               transport=#transport{ name=Trans },
+               handler={Handler, HState0},
+               wsreq=WSReq,
+               buffer=Buffer
+              }=Context) ->
+    {ok, WSReqN, HStateN, BufferN} =
+    Result =
+        case websocket_req:remaining(WSReq) of
+            undefined ->
+                retrieve_frame(WSReq, Handler, HState0,
+                               << Buffer/binary, Data/binary >>);
+            Remaining ->
+                retrieve_frame(WSReq, Handler, HState0,
+                               websocket_req:opcode(WSReq), Remaining, Data, Buffer)
+        end,
+    case Result of
+        {ok, WSReqN, HStateN, BufferN} ->
+            {next_state, connected, Context#context{
+                                      handler={Handler, HStateN},
+                                      wsreq=WSReqN,
+                                      buffer=BufferN}};
+        {close, Reason, WSReqN, Handler, HStateN} ->
+            {stop, Reason, Context#context{
+                             wsreq=WSReqN, 
+                             handler={Handler, HStateN}}}
+    end;
+handle_info(Msg, State,
+            #context{
+               wsreq=WSReq,
+               handler={Handler, HState0},
+               buffer=Buffer
+              }=Context) ->
+    try Handler:websocket_info(Msg, WSReq, HState0) of
+        HandlerResponse ->
+            case handle_response(HandlerResponse, Handler, Buffer, WSReq) of
+                {ok, WSReqN, HStateN, Buffer} ->
+                    {next_state, State, Context#context{
+                                          handler={Handler, HStateN},
+                                          wsreq=WSReqN,
+                                          buffer=Buffer}};
+                {close, Reason, WSReqN, Handler, HStateN} ->
+                    {stop, Reason, Context#context{
+                                     wsreq=WSReqN,
+                                     handler={Handler, HStateN}}}
+            end
+    catch Class:Reason ->
+        %% TODO Maybe a function_clause catch here to allow
+        %% not having to have a catch-all clause in websocket_info CB?
+        error_logger:error_msg(
+          "** Websocket client ~p terminating in ~p/~p~n"
+          "   for the reason ~p:~p~n"
+          "** Last message was ~p~n"
+          "** Handler state was ~p~n"
+          "** Stacktrace: ~p~n~n",
+          [Handler, websocket_info, 3, Class, Reason, Msg, HState0,
+           erlang:get_stacktrace()]),
+        websocket_close(WSReq, Handler, HState0, Reason),
+        {stop, Reason, Context}
+    end.
+
+-spec code_change(OldVsn :: term(), state_name(), #context{}, Extra :: any()) ->
+    {ok, state_name(), #context{}}.
+code_change(_OldVsn, StateName, Context, _Extra) ->
+    {ok, StateName, Context}.
+
+disconnected(connect, #context{
+                         transport=T,
+                         headers = Headers,
+                         handler={Handler, HState0},
+                         target={Protocol, Host, Port, Path}
+                        }=Context) ->
+    case (T#transport.mod):connect(Host, Port, T#transport.opts, 6000) of
+        {ok, Socket} ->
+            WSReq0 = websocket_req:new(
+                Protocol, Host, Port, Path,
+                Socket, T,
+                generate_ws_key()
+            ),
+            {ok, HStateN, KeepAlive} =
+                case Handler:onconnect(WSReq0, HState0) of
+                    {ok, HState1} -> {ok, HState1, infinity};
+                    {ok, _HS1, KA}=Result ->
+                        erlang:send_after(KA, self(), keepalive),
+                        Result
                 end,
-    SockReply = case Transport of
-                    ssl ->
-                        ssl:connect(Host, Port,
-                                    [{mode, binary},
-                                     {verify, verify_none},
-                                     {active, false},
-                                     {packet, 0}
-                                    ], 6000);
-                    gen_tcp ->
-                        gen_tcp:connect(Host, Port,
-                                        [binary,
-                                         {active, false},
-                                         {packet, 0}
-                                        ], 6000)
-                end,
-    {ok, Socket} = case SockReply of
-                       {ok, Sock} -> {ok, Sock};
-                       {error, _} = ConnectError ->
-                           proc_lib:init_ack(ConnectError),
-                           exit(normal)
-                   end,
-    WSReq = websocket_req:new(
-              Protocol,
-              Host,
-              Port,
-              Path,
-              Socket,
-              Transport,
-              Handler,
-              generate_ws_key()
-             ),
-    ExtraHeaders = proplists:get_value(extra_headers, Opts, []),
-    case websocket_handshake(WSReq, ExtraHeaders) of
-        {error, _} = HandshakeError ->
-            proc_lib:init_ack(HandshakeError),
-            exit(normal);
-        {ok, Buffer} ->
-            AsyncStart = proplists:get_value(async_start, Opts, true),
-            AsyncStart andalso proc_lib:init_ack({ok, self()}),
-            {ok, HandlerState, KeepAlive} = case Handler:init(Args, WSReq) of
-                                                {ok, HS} ->
-                                                    {ok, HS, infinity};
-                                                {ok, HS, KA} ->
-                                                    {ok, HS, KA}
-                                            end,
-            AsyncStart orelse proc_lib:init_ack({ok, self()}),
-            case Socket of
-                {sslsocket, _, _} ->
-                    ssl:setopts(Socket, [{active, true}]);
-                _ ->
-                    inet:setopts(Socket, [{active, true}])
-            end,
-            %% Since we could have already received some data already, we simulate a Socket message.
-            case Buffer of
-                <<>> -> ok;
-                _    -> self() ! {Transport, Socket, Buffer}
-            end,
-            KATimer = case KeepAlive of
-                          infinity ->
-                              undefined;
-                          _ ->
-                              erlang:send_after(KeepAlive, self(), keepalive)
-                      end,
-            websocket_loop(websocket_req:set([{keepalive,KeepAlive},{keepalive_timer,KATimer}], WSReq), HandlerState, <<>>)
-  end.
+            WSReq1 = websocket_req:keepalive(KeepAlive, WSReq0),
+            ok = send_handshake(WSReq1, Headers),
+            {next_state, handshaking, Context#context{
+                                      handler={Handler, HStateN},
+                                      wsreq=WSReq1}};
+        {error, Reason} ->
+            error_logger:error_msg("Stopping: Unable to open socket: ~p~n", [Reason]),
+            {stop, {error, Reason}, Context}
+    end.
+
+handshaking(_Event, Context) -> {next_state, handshaking, Context}.
+
+%% TODO Handle sync sending
+connected(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
+connected({cast, Frame}, #context{wsreq=WSReq}=Context) ->
+    ok = send(Frame, WSReq),
+    {next_state, connected, Context}.
+
+%% Unsupported sync event handlers
+disconnected(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
+handshaking(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
+
+%% @doc Key sent in initial handshake
+-spec generate_ws_key() ->
+                             binary().
+generate_ws_key() ->
+    base64:encode(crypto:rand_bytes(16)).
 
 %% @doc Send http upgrade request and validate handshake response challenge
--spec websocket_handshake(WSReq :: websocket_req:req(), [{string(), string()}]) -> {ok, binary()} | {error, term()}.
-websocket_handshake(WSReq, ExtraHeaders) ->
+-spec send_handshake(WSReq :: websocket_req:req(), [{string(), string()}]) ->
+    {ok, binary()}
+    | {error, term()}.
+send_handshake(WSReq, ExtraHeaders) ->
     [Protocol, Path, Host, Key, Transport, Socket] =
         websocket_req:get([protocol, path, host, key, transport, socket], WSReq),
     Handshake = ["GET ", Path, " HTTP/1.1\r\n"
@@ -133,91 +351,35 @@ websocket_handshake(WSReq, ExtraHeaders) ->
                  "Upgrade: websocket\r\n",
                  [ [Header, ": ", Value, "\r\n"] || {Header, Value} <- ExtraHeaders],
                  "\r\n"],
-    Transport:send(Socket, Handshake),
-    {ok, HandshakeResponse} = receive_handshake(<<>>, Transport, Socket),
-    validate_handshake(HandshakeResponse, Key).
-
-%% @doc Blocks and waits until handshake response data is received
--spec receive_handshake(Buffer :: binary(),
-                        Transport :: module(),
-                        Socket :: term()) ->
-                               {ok, binary()}.
-receive_handshake(Buffer, Transport, Socket) ->
-    case re:run(Buffer, "\\r\\n\\r\\n") of
-        {match, _} ->
-            {ok, Buffer};
-        _ ->
-            {ok, Data} = Transport:recv(Socket, 0, 6000),
-            receive_handshake(<< Buffer/binary, Data/binary >>,
-                              Transport, Socket)
-    end.
+    (Transport#transport.mod):send(Socket, Handshake).
 
 %% @doc Send frame to server
 send(Frame, WSReq) ->
-  Socket = websocket_req:socket(WSReq),
-  Transport = websocket_req:transport(WSReq),
-  Transport:send(Socket, encode_frame(Frame)).
+    [Socket, Transport] = websocket_req:get([socket, transport], WSReq),
+    (Transport#transport.mod):send(Socket, encode_frame(Frame)).
 
-
-%% @doc Main loop
--spec websocket_loop(WSReq :: websocket_req:req(), HandlerState :: any(),
-                     Buffer :: binary()) ->
-                            ok.
-websocket_loop(WSReq, HandlerState, Buffer) ->
-  receive
-    Message -> handle_websocket_message(WSReq, HandlerState, Buffer, Message)
-  end.
-
-handle_websocket_message(WSReq, HandlerState, Buffer, Message) ->
-    [Handler, Remaining, Socket] =
-        websocket_req:get([handler, remaining, socket], WSReq),
-    case Message of
-        keepalive ->
-            case websocket_req:get([keepalive_timer], WSReq) of
-              [undefined] -> ok;
-              [OldTimer] -> erlang:cancel_timer(OldTimer)
-            end,
-            ok = send({ping, <<>>}, WSReq),
-            KATimer = erlang:send_after(websocket_req:keepalive(WSReq), self(), keepalive),
-            websocket_loop(websocket_req:set([{keepalive_timer,KATimer}], WSReq), HandlerState, Buffer);
-        {cast, Frame} ->
-            ok = send(Frame, WSReq),
-            websocket_loop(WSReq, HandlerState, Buffer);
-        {_Closed, Socket} ->
-            websocket_close(WSReq, HandlerState, {remote, closed});
-        {_TransportType, Socket, Data} ->
-            case Remaining of
-                undefined ->
-                    retrieve_frame(WSReq, HandlerState,
-                                   << Buffer/binary, Data/binary >>);
-                _ ->
-                    retrieve_frame(WSReq, HandlerState,
-                                   websocket_req:opcode(WSReq), Remaining, Data, Buffer)
-            end;
-        Msg ->
-            Handler = websocket_req:handler(WSReq),
-            try Handler:websocket_info(Msg, WSReq, HandlerState) of
-              HandlerResponse ->
-                handle_response(WSReq, HandlerResponse, Buffer)
-            catch Class:Reason ->
-              error_logger:error_msg(
-                "** Websocket client ~p terminating in ~p/~p~n"
-                "   for the reason ~p:~p~n"
-                "** Last message was ~p~n"
-                "** Handler state was ~p~n"
-                "** Stacktrace: ~p~n~n",
-                [Handler, websocket_info, 3, Class, Reason, Msg, HandlerState,
-                  erlang:get_stacktrace()]),
-              websocket_close(WSReq, HandlerState, Reason)
-            end
-    end.
+%% @doc Encodes the data with a header (including a masking key) and
+%% masks the data
+-spec encode_frame(websocket_req:frame()) -> binary().
+encode_frame({Type, Payload}) ->
+    Opcode = websocket_req:name_to_opcode(Type),
+    Len = iolist_size(Payload),
+    BinLen = payload_length_to_binary(Len),
+    MaskingKeyBin = crypto:rand_bytes(4),
+    << MaskingKey:32 >> = MaskingKeyBin,
+    Header = << 1:1, 0:3, Opcode:4, 1:1, BinLen/bits, MaskingKeyBin/bits >>,
+    MaskedPayload = mask_payload(MaskingKey, Payload),
+    << Header/binary, MaskedPayload/binary >>;
+encode_frame(Type) when is_atom(Type) ->
+    encode_frame({Type, <<>>}).
 
 -spec websocket_close(WSReq :: websocket_req:req(),
+                      Handler :: module(),
                       HandlerState :: any(),
                       Reason :: tuple()) -> ok.
-websocket_close(WSReq, HandlerState, Reason) ->
-    Handler = websocket_req:handler(WSReq),
-    try Handler:websocket_terminate(Reason, WSReq, HandlerState)
+websocket_close(WSReq, Handler, HandlerState, Reason) ->
+    try
+        Handler:websocket_terminate(Reason, WSReq, HandlerState)
     catch Class:Reason2 ->
       error_logger:error_msg(
         "** Websocket handler ~p terminating in ~p/~p~n"
@@ -227,12 +389,32 @@ websocket_close(WSReq, HandlerState, Reason) ->
         [Handler, websocket_terminate, 3, Class, Reason2, HandlerState,
           erlang:get_stacktrace()])
     end.
+%% TODO {stop, Reason, Context}
 
-%% @doc Key sent in initial handshake
--spec generate_ws_key() ->
-                             binary().
-generate_ws_key() ->
-    base64:encode(crypto:rand_bytes(16)).
+%% @doc Handles return values from the callback module
+handle_response({reply, Frame, HandlerState}, Handler, Buffer, WSReq) ->
+    case send(Frame, WSReq) of
+        ok ->
+           %% we can still have more messages in buffer
+           case websocket_req:remaining(WSReq) of
+               %% buffer should not contain uncomplete messages
+               undefined -> retrieve_frame(WSReq, Handler, HandlerState, Buffer);
+               %% buffer contain uncomplete message that shouldnt be parsed
+               _ -> {ok, WSReq, HandlerState, Buffer}
+           end;
+        Reason -> {close, Reason, WSReq, Handler, HandlerState}
+    end;
+handle_response({ok, HandlerState}, Handler, Buffer, WSReq) ->
+    %% we can still have more messages in buffer
+    case websocket_req:remaining(WSReq) of
+        %% buffer should not contain uncomplete messages
+        undefined -> retrieve_frame(WSReq, Handler, HandlerState, Buffer);
+        %% buffer contain uncomplete message that shouldnt be parsed
+        _ -> {ok, WSReq, HandlerState, Buffer}
+    end;
+handle_response({close, Payload, HandlerState}, Handler, _, WSReq) ->
+    ok = send({close, Payload}, WSReq),
+    {close, normal, WSReq, Handler, HandlerState}.
 
 %% @doc Validate handshake response challenge
 -spec validate_handshake(HandshakeResponse :: binary(), Key :: binary()) -> {ok, binary()} | {error, term()}.
@@ -253,72 +435,71 @@ validate_handshake(HandshakeResponse, Key) ->
 
 %% @doc Consumes the HTTP response and extracts status, header and the body.
 consume_response(Response) ->
-    {ok, {http_response, Version, Code, Message}, Header} = erlang:decode_packet(http_bin, Response, []),
+    {ok, {http_response, Version, Code, Message}, Header} =
+        erlang:decode_packet(http_bin, Response, []),
     consume_response({Version, Code, Message}, Header, []).
-
 consume_response(Status, Response, HeaderAcc) ->
     case erlang:decode_packet(httph_bin, Response, []) of
         {ok, {http_header, _Length, Field, _Reserved, Value}, Rest} ->
             consume_response(Status, Rest, [{Field, Value} | HeaderAcc]);
-
         {ok, http_eoh, Body} ->
             {ok, Status, HeaderAcc, Body}
     end.
 
 %% @doc Start or continue continuation payload with length less than 126 bytes
-retrieve_frame(WSReq, HandlerWSReq,
+retrieve_frame(WSReq, Handler, HState,
                << 0:4, Opcode:4, 0:1, Len:7, Rest/bits >>)
   when Len < 126 ->
     WSReq1 = set_continuation_if_empty(WSReq, Opcode),
     WSReq2 = websocket_req:fin(0, WSReq1),
-    retrieve_frame(WSReq2, HandlerWSReq, Opcode, Len, Rest, <<>>);
+    retrieve_frame(WSReq2, Handler, HState, Opcode, Len, Rest, <<>>);
 %% @doc Start or continue continuation payload with length a 2 byte int
-retrieve_frame(WSReq, HandlerWSReq,
+retrieve_frame(WSReq, Handler, HState,
                << 0:4, Opcode:4, 0:1, 126:7, Len:16, Rest/bits >>)
   when Len > 125, Opcode < 8 ->
     WSReq1 = set_continuation_if_empty(WSReq, Opcode),
     WSReq2 = websocket_req:fin(0, WSReq1),
-    retrieve_frame(WSReq2, HandlerWSReq, Opcode, Len, Rest, <<>>);
+    retrieve_frame(WSReq2, Handler, HState, Opcode, Len, Rest, <<>>);
 %% @doc Start or continue continuation payload with length a 64 bit int
-retrieve_frame(WSReq, HandlerWSReq,
+retrieve_frame(WSReq, Handler, HState,
                << 0:4, Opcode:4, 0:1, 127:7, 0:1, Len:63, Rest/bits >>)
   when Len > 16#ffff, Opcode < 8 ->
     WSReq1 = set_continuation_if_empty(WSReq, Opcode),
     WSReq2 = websocket_req:fin(0, WSReq1),
-    retrieve_frame(WSReq2, HandlerWSReq, Opcode, Len, Rest, <<>>);
+    retrieve_frame(WSReq2, Handler, HState, Opcode, Len, Rest, <<>>);
 %% @doc Length is less 126 bytes
-retrieve_frame(WSReq, HandlerWSReq,
+retrieve_frame(WSReq, Handler, HState,
                << 1:1, 0:3, Opcode:4, 0:1, Len:7, Rest/bits >>)
   when Len < 126 ->
     WSReq1 = websocket_req:fin(1, WSReq),
-    retrieve_frame(WSReq1, HandlerWSReq, Opcode, Len, Rest, <<>>);
+    retrieve_frame(WSReq1, Handler, HState, Opcode, Len, Rest, <<>>);
 %% @doc Length is a 2 byte integer
-retrieve_frame(WSReq, HandlerWSReq,
+retrieve_frame(WSReq, Handler, HState,
                << 1:1, 0:3, Opcode:4, 0:1, 126:7, Len:16, Rest/bits >>)
   when Len > 125, Opcode < 8 ->
     WSReq1 = websocket_req:fin(1, WSReq),
-    retrieve_frame(WSReq1, HandlerWSReq, Opcode, Len, Rest, <<>>);
+    retrieve_frame(WSReq1, Handler, HState, Opcode, Len, Rest, <<>>);
 %% @doc Length is a 64 bit integer
-retrieve_frame(WSReq, HandlerWSReq,
+retrieve_frame(WSReq, Handler, HState,
                << 1:1, 0:3, Opcode:4, 0:1, 127:7, 0:1, Len:63, Rest/bits >>)
   when Len > 16#ffff, Opcode < 8 ->
     WSReq1 = websocket_req:fin(1, WSReq),
-    retrieve_frame(WSReq1, HandlerWSReq, Opcode, Len, Rest, <<>>);
+    retrieve_frame(WSReq1, Handler, HState, Opcode, Len, Rest, <<>>);
 %% @doc Need more data to read length properly
-retrieve_frame(WSReq, HandlerWSReq, Data) ->
-    websocket_loop(WSReq, HandlerWSReq, Data).
+retrieve_frame(WSReq, _Handler, HState, Data) ->
+    {ok, WSReq, HState, Data}.
 
 %% @doc Length known and still missing data
-retrieve_frame(WSReq, HandlerWSReq, Opcode, Len, Data, Buffer)
+retrieve_frame(WSReq, _Handler, HState, Opcode, Len, Data, Buffer)
   when byte_size(Data) < Len ->
     Remaining = Len - byte_size(Data),
     WSReq1 = websocket_req:remaining(Remaining, WSReq),
     WSReq2  = websocket_req:opcode(Opcode, WSReq1),
-    websocket_loop(WSReq2, HandlerWSReq, << Buffer/bits, Data/bits >>);
+    {ok, WSReq2, HState, << Buffer/bits, Data/bits >>};
 %% @doc Length known and remaining data is appended to the buffer
-retrieve_frame(WSReq, HandlerState, Opcode, Len, Data, Buffer) ->
-    [Handler, Continuation, ContinuationOpcode] =
-        websocket_req:get([handler, continuation, continuation_opcode], WSReq),
+retrieve_frame(WSReq, Handler, HState, Opcode, Len, Data, Buffer) ->
+    [Continuation, ContinuationOpcode] =
+        websocket_req:get([continuation, continuation_opcode], WSReq),
     Fin = websocket_req:fin(WSReq),
     << Payload:Len/binary, Rest/bits >> = Data,
     FullPayload = << Buffer/binary, Payload/binary >>,
@@ -341,15 +522,15 @@ retrieve_frame(WSReq, HandlerState, Opcode, Len, Data, Buffer) ->
                          1011 -> {error, handler, ClosePayload};
                          _ -> {remote, Code, ClosePayload}
                      end,
-            websocket_close(WSReq, HandlerState, Reason);
+            {close, Reason, WSReq, Handler, HState};
         close ->
-            websocket_close(WSReq, HandlerState, {remote, <<>>});
+            {close, {remote, <<>>}, WSReq, Handler, HState};
         %% Non-control continuation frame
         _ when Opcode < 8, Continuation =/= undefined, Fin == 0 ->
             %% Append to previously existing continuation payloads and continue
             Continuation1 = << Continuation/binary, FullPayload/binary >>,
             WSReq1 = websocket_req:continuation(Continuation1, WSReq),
-            retrieve_frame(WSReq1, HandlerState, Rest);
+            retrieve_frame(WSReq1, Handler, HState, Rest);
         %% Terminate continuation frame sequence with non-control frame
         _ when Opcode < 8, Continuation =/= undefined, Fin == 1 ->
             DefragPayload = << Continuation/binary, FullPayload/binary >>,
@@ -358,10 +539,10 @@ retrieve_frame(WSReq, HandlerState, Opcode, Len, Data, Buffer) ->
             ContinuationOpcodeName = websocket_req:opcode_to_name(ContinuationOpcode),
             try Handler:websocket_handle(
                                 {ContinuationOpcodeName, DefragPayload},
-                                WSReq2, HandlerState) of
+                                WSReq2, HState) of
               HandlerResponse ->
-                handle_response(websocket_req:remaining(undefined, WSReq1),
-                                HandlerResponse, Rest)
+                handle_response(HandlerResponse,
+                                Handler, Rest, websocket_req:remaining(undefined, WSReq1))
             catch Class:Reason ->
               error_logger:error_msg(
                 "** Websocket client ~p terminating in ~p/~p~n"
@@ -369,71 +550,28 @@ retrieve_frame(WSReq, HandlerState, Opcode, Len, Data, Buffer) ->
                 "** Websocket message was ~p~n"
                 "** Handler state was ~p~n"
                 "** Stacktrace: ~p~n~n",
-                [Handler, websocket_handle, 3, Class, Reason, {ContinuationOpcodeName, DefragPayload}, HandlerState,
+                [Handler, websocket_handle, 3, Class, Reason, {ContinuationOpcodeName, DefragPayload}, HState,
                   erlang:get_stacktrace()]),
-              websocket_close(WSReq, HandlerState, Reason)
+              {close, Reason, WSReq, Handler, HState}
             end;
         _ ->
             try Handler:websocket_handle(
                                 {OpcodeName, FullPayload},
-                                WSReq, HandlerState) of
+                                WSReq, HState) of
               HandlerResponse ->
-                handle_response(websocket_req:remaining(undefined, WSReq),
-                                HandlerResponse, Rest)
+                handle_response(HandlerResponse,
+                                Handler, Rest, websocket_req:remaining(undefined, WSReq))
             catch Class:Reason ->
               error_logger:error_msg(
                 "** Websocket client ~p terminating in ~p/~p~n"
                 "   for the reason ~p:~p~n"
                 "** Handler state was ~p~n"
                 "** Stacktrace: ~p~n~n",
-                [Handler, websocket_handle, 3, Class, Reason, HandlerState,
+                [Handler, websocket_handle, 3, Class, Reason, HState,
                   erlang:get_stacktrace()]),
-              websocket_close(WSReq, HandlerState, Reason)
+              {close, Reason, WSReq, Handler, HState}
             end
     end.
-
-%% @doc Handles return values from the callback module
-handle_response(WSReq, {reply, Frame, HandlerState}, Buffer) ->
-    [Socket, Transport] = websocket_req:get([socket, transport], WSReq),
-    case Transport:send(Socket, encode_frame(Frame)) of
-        ok ->
-           %% we can still have more messages in buffer
-           case websocket_req:remaining(WSReq) of
-               %% buffer should not contain uncomplete messages
-               undefined -> retrieve_frame(WSReq, HandlerState, Buffer);
-               %% buffer contain uncomplete message that shouldnt be parsed
-               _ -> websocket_loop(WSReq, HandlerState, Buffer)
-           end;
-        Reason -> websocket_close(WSReq, HandlerState, Reason)
-    end;
-handle_response(WSReq, {ok, HandlerState}, Buffer) ->
-    %% we can still have more messages in buffer
-    case websocket_req:remaining(WSReq) of
-        %% buffer should not contain uncomplete messages
-        undefined -> retrieve_frame(WSReq, HandlerState, Buffer);
-        %% buffer contain uncomplete message that shouldnt be parsed
-        _ -> websocket_loop(WSReq, HandlerState, Buffer)
-    end;
-
-handle_response(WSReq, {close, Payload, HandlerState}, _) ->
-    send({close, Payload}, WSReq),
-    websocket_close(WSReq, HandlerState, {normal, Payload}).
-
-%% @doc Encodes the data with a header (including a masking key) and
-%% masks the data
--spec encode_frame(websocket_req:frame()) ->
-                          binary().
-encode_frame({Type, Payload}) ->
-    Opcode = websocket_req:name_to_opcode(Type),
-    Len = iolist_size(Payload),
-    BinLen = payload_length_to_binary(Len),
-    MaskingKeyBin = crypto:rand_bytes(4),
-    << MaskingKey:32 >> = MaskingKeyBin,
-    Header = << 1:1, 0:3, Opcode:4, 1:1, BinLen/bits, MaskingKeyBin/bits >>,
-    MaskedPayload = mask_payload(MaskingKey, Payload),
-    << Header/binary, MaskedPayload/binary >>;
-encode_frame(Type) when is_atom(Type) ->
-    encode_frame({Type, <<>>}).
 
 %% @doc The payload is masked using a masking key byte by byte.
 %% Can do it in 4 byte chunks to save time until there is left than 4 bytes left

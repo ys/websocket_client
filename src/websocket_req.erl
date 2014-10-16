@@ -1,40 +1,9 @@
 %% @doc Accessor module for the #websocket_req{} record.
 -module(websocket_req).
 
--record(websocket_req, {
-          protocol                        :: protocol(),
-          host                            :: string(),
-          port                            :: inet:port_number(),
-          path                            :: string(),
-          keepalive = infinity            :: infinity | integer(),
-          keepalive_timer = undefined     :: undefined | reference(),
-          socket                          :: inet:socket() | ssl:sslsocket(),
-          transport                       :: module(),
-          handler                         :: module(),
-          key                             :: binary(),
-          remaining = undefined           :: undefined | integer(),
-          fin = undefined                 :: undefined | fin(),
-          opcode = undefined              :: undefined | opcode(),
-          continuation = undefined        :: undefined | binary(),
-          continuation_opcode = undefined :: undefined | opcode()
-         }).
+-include("websocket_req.hrl").
 
--opaque req() :: #websocket_req{}.
--export_type([req/0]).
-
--type protocol() :: ws | wss.
-
--type frame() :: close | ping | pong
-               | {text | binary | close | ping | pong, binary()}
-               | {close, 1000..4999, binary()}.
-
--type opcode() :: 0 | 1 | 2 | 8 | 9 | 10.
--export_type([protocol/0, opcode/0, frame/0]).
-
--type fin() :: 0 | 1.
--export_type([fin/0]).
-
--export([new/8,
+-export([new/7,
          protocol/2, protocol/1,
          host/2, host/1,
          port/2, port/1,
@@ -42,7 +11,6 @@
          keepalive/2, keepalive/1,
          socket/2, socket/1,
          transport/2, transport/1,
-         handler/2, handler/1,
          key/2, key/1,
          remaining/2, remaining/1,
          fin/2, fin/1,
@@ -59,8 +27,8 @@
 
 -spec new(protocol(), string(), inet:port_number(),
           string(), inet:socket() | ssl:sslsocket(),
-          module(), module(), binary()) -> req().
-new(Protocol, Host, Port, Path, Socket, Transport, Handler, Key) ->
+          #transport{}, binary()) -> req().
+new(Protocol, Host, Port, Path, Socket, Transport, Key) ->
     #websocket_req{
      protocol = Protocol,
      host = Host,
@@ -68,7 +36,6 @@ new(Protocol, Host, Port, Path, Socket, Transport, Handler, Key) ->
      path = Path,
      socket = Socket,
      transport = Transport,
-     handler = Handler,
      key = Key
     }.
 
@@ -150,14 +117,6 @@ transport(T, Req) ->
     Req#websocket_req{transport = T}.
 
 
--spec handler(req()) -> module().
-handler(#websocket_req{handler = H}) -> H.
-
--spec handler(module(), req()) -> req().
-handler(H, Req) ->
-    Req#websocket_req{handler = H}.
-
-
 -spec key(req()) -> binary().
 key(#websocket_req{key = K}) -> K.
 
@@ -216,7 +175,6 @@ g(keepalive, #websocket_req{keepalive = Ret}) -> Ret;
 g(keepalive_timer, #websocket_req{keepalive_timer = Ret}) -> Ret;
 g(socket, #websocket_req{socket = Ret}) -> Ret;
 g(transport, #websocket_req{transport = Ret}) -> Ret;
-g(handler, #websocket_req{handler = Ret}) -> Ret;
 g(key, #websocket_req{key = Ret}) -> Ret;
 g(remaining, #websocket_req{remaining = Ret}) -> Ret;
 g(fin, #websocket_req{fin = Ret}) -> Ret;
@@ -234,7 +192,6 @@ set([{keepalive, Val} | Tail], Req) -> set(Tail, Req#websocket_req{keepalive = V
 set([{keepalive_timer, Val} | Tail], Req) -> set(Tail, Req#websocket_req{keepalive_timer = Val});
 set([{socket, Val} | Tail], Req) -> set(Tail, Req#websocket_req{socket = Val});
 set([{transport, Val} | Tail], Req) -> set(Tail, Req#websocket_req{transport = Val});
-set([{handler, Val} | Tail], Req) -> set(Tail, Req#websocket_req{handler = Val});
 set([{key, Val} | Tail], Req) -> set(Tail, Req#websocket_req{key = Val});
 set([{remaining, Val} | Tail], Req) -> set(Tail, Req#websocket_req{remaining = Val});
 set([{fin, Val} | Tail], Req) -> set(Tail, Req#websocket_req{fin = Val});

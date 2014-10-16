@@ -17,7 +17,7 @@
 -record(state, {}).
 
 start() ->
-    io:format("Starting echo server.~n"),
+    ct:pal("Starting ~p.~n", [?MODULE]),
     Dispatch = cowboy_router:compile([{'_', [
                                              {"/hello", ?MODULE, []},
                                              {'_', ?MODULE, []}
@@ -44,22 +44,22 @@ websocket_init(_Transport, Req, _Opts) ->
             end;
         {Code, Req2} ->
             IntegerCode = list_to_integer(binary_to_list(Code)),
-            io:format("Shuting down on init using '~p' status code~n", [IntegerCode]),
+            ct:pal("~p shuting down on init using '~p' status code~n", [?MODULE, IntegerCode]),
             {ok, Req3} = cowboy_req:reply(IntegerCode, Req2),
             {shutdown, Req3}
     end.
 
 websocket_handle(Frame, Req, State) ->
-    io:format("Received frame~n"),
+    ct:pal("~p received frame~n", [?MODULE]),
     {reply, Frame, Req, State}.
 
 websocket_info({send, Text}, Req, State) ->
-    io:format("Sent frame~n"),
+    ct:pal("~p sent frame~n", [?MODULE]),
     {reply, {text, Text}, Req, State};
 
 websocket_info(_Msg, Req, State) ->
     {ok, Req, State}.
 
 websocket_terminate(Reason, _Req, _State) ->
-    io:format("Server terminating with reason ~p~n", [Reason]),
+    ct:pal("~p terminating with reason ~p~n", [?MODULE, Reason]),
     ok.
