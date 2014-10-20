@@ -113,6 +113,9 @@ test_quick_response(_) ->
     ok.
 
 test_bad_request(_) ->
+    %% Since this is now a real OTP Special Process, we need to trap exits to
+    %% receive the error reason properly
+    process_flag(trap_exit, true),
     %% Connect to the server and wait for a error
     {error, {400, <<"Bad Request">>}} =  ws_client:start_link("ws://localhost:8080/hello/?code=400"),
     {error, {403, <<"Forbidden">>}} =  ws_client:start_link("ws://localhost:8080/hello/?code=403"),

@@ -79,7 +79,10 @@ start_link(URL, Handler, HandlerArgs, AsyncStart) when is_boolean(AsyncStart) ->
 start_link(URL, Handler, HandlerArgs, Opts) when is_list(Opts) ->
     case http_uri:parse(URL, [{scheme_defaults, [{ws,80},{wss,443}]}]) of
         {ok, {Protocol, _, Host, Port, Path, Query}} ->
-            gen_fsm:start_link(?MODULE, [Protocol, Host, Port, Path ++ Query, Handler, HandlerArgs, Opts], [{dbg, [trace]}]);
+            InitArgs = [Protocol, Host, Port, Path ++ Query, Handler, HandlerArgs, Opts],
+            %FsmOpts = [{dbg, [trace]}],
+            FsmOpts = [],
+            gen_fsm:start_link(?MODULE, InitArgs, FsmOpts);
         {error, _} = Error ->
             Error
     end.
@@ -95,6 +98,9 @@ cast(Client, Frame) ->
     %% NB DO NOT try to use Timeout to do keepalive.
     | {stop, Reason :: term()}.
 init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
+    {ok, HState} = Handler:init(HandlerArgs), %% TODO More rigorous checks of return values
+                                       %% e.g. {error, Reason}
+    AsyncStart = proplists:get_value(async_start, Opts, false),
     Transport =
         case Protocol of
             wss ->
@@ -105,7 +111,7 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
                    error = ssl_error,
                    opts = [
                            {mode, binary},
-                           {active, true},
+                           {active, AsyncStart},
                            {verify, verify_none},
                            {packet, 0}
                           ]};
@@ -117,20 +123,41 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
                     error = tcp_error,
                     opts = [
                             binary,
-                            {active, true},
+                            {active, AsyncStart},
                             {packet, 0}
                            ]}
         end,
-    {ok, HState} = Handler:init(HandlerArgs), %% TODO More rigorous checks of return values
-                                       %% e.g. {error, Reason}
-    AsyncStart = proplists:get_value(async_start, Opts, true),
-    AsyncStart andalso gen_fsm:send_event(self(), connect),
-    {ok, disconnected, #context{
-                          transport = Transport,
-                          headers = proplists:get_value(extra_headers, Opts, []),
-                          target  = {Protocol, Host, Port, Path},
-                          handler = {Handler, HState}
-                         }}.
+    WSReq = websocket_req:new(
+                Protocol, Host, Port, Path,
+                undefined, Transport,
+                generate_ws_key()
+            ),
+    Context0 = #context{
+                  transport = Transport,
+                  headers = proplists:get_value(extra_headers, Opts, []),
+                  wsreq   = WSReq,
+                  target  = {Protocol, Host, Port, Path},
+                  handler = {Handler, HState}
+                 },
+    if AsyncStart ->
+           %% In async start mode, we return as quickly as possible, letting handshaking
+           %% etc happen in the background
+           gen_fsm:send_event(self(), connect),
+           {ok, disconnected, Context0};
+       true ->
+           %% In synchronous start mode, we need to connect and handshake before we return
+           %% control to the caller - also switch back to active mode for the socket
+           case connect(Context0) of
+               {error, ConnErr}->
+                   {stop, ConnErr};
+               {ok, #context{wsreq=WSReq1}=Context1} ->
+                   case wait_for_handshake(WSReq1) of
+                       {ok, Data} -> {ok, connected, Context1#context{buffer=Data}};
+                       {error, HSErr}->
+                           {stop, HSErr}
+                   end
+           end
+    end.
 
 -spec terminate(Reason :: term(), state_name(), #context{}) -> ok.
 %% TODO Use Reason!!
@@ -147,6 +174,74 @@ terminate(_Reason, _StateName,
             _ = (T#transport.mod):close(Socket)
     end,
     ok.
+
+connect(TranspMod, Host, Port, TranspOpts, Timeout) ->
+    TranspMod:connect(Host, Port, TranspOpts, Timeout).
+
+connect(#context{
+           transport=T,
+           wsreq=WSReq0,
+           headers=Headers,
+           handler={Handler, HState0},
+           target={_Protocol, Host, Port, _Path}
+          }=Context) ->
+    case connect(T#transport.mod, Host, Port, T#transport.opts, 6000) of
+        {ok, Socket} ->
+            WSReq1 = websocket_req:socket(Socket, WSReq0),
+            {ok, HStateN, KeepAlive} =
+                case Handler:onconnect(WSReq1, HState0) of
+                    {ok, HState1} -> {ok, HState1, infinity};
+                    {ok, _HS1, KA}=Result ->
+                        erlang:send_after(KA, self(), keepalive),
+                        Result
+                end,
+            WSReq2 = websocket_req:keepalive(KeepAlive, WSReq1),
+            ok = send_handshake(WSReq2, Headers),
+            {ok, Context#context{ handler={Handler, HStateN}, wsreq=WSReq2}};
+        {error,_}=Error ->
+            Error
+    end.
+
+%% TODO Split verify/validate out and don't hide the logic!
+wait_for_handshake(WSReq) ->
+    wait_for_handshake(<<>>, WSReq).
+wait_for_handshake(Buffer, #websocket_req{
+                      socket=Socket,
+                      transport=T
+                     }=WSReq) ->
+    %% TODO Find a graceful way to handle gen_tcp/ssl/inet module diffs
+    OptMod = case T#transport.mod of
+                 gen_tcp -> inet;
+                 ssl -> ssl
+             end,
+    OptMod:setopts(Socket, [{active, false}]),
+    case (T#transport.mod):recv(Socket, 0, 6000) of
+        {ok, Data} ->
+            case verify_handshake(<< Buffer/binary, Data/binary >>, WSReq) of
+                {error, _}=VerifyError -> VerifyError;
+                {notfound, Remainder} ->
+                    wait_for_handshake(Remainder, WSReq);
+                {ok, Remainder} -> 
+                    ok = OptMod:setopts(Socket, [{active, true}]),
+                    {ok, Remainder}
+            end;
+        {error, _}=RecvError ->
+            RecvError
+    end.
+
+verify_handshake(Data, WSReq) ->
+    case re:run(Data, "\\r\\n\\r\\n") of
+        {match, _} ->
+            case validate_handshake(Data, websocket_req:key(WSReq)) of
+                {error,_}=Error ->
+                    Error;
+                {ok, Remaining} ->
+                    %% TODO This is nasty and hopefully there's a nicer way
+                    {ok, Remaining}
+            end;
+        _ ->
+            {notfound, Data}
+    end.
 
 -spec handle_event(Event :: term(), state_name(), #context{}) ->
     {next_state, state_name(), #context{}}
@@ -214,7 +309,6 @@ handle_info({Trans, Socket, Data},
                     %% TODO This is nasty and hopefully there's a nicer way
                     self() ! {Trans, Socket, Remaining},
                     {next_state, connected, Context#context{buffer = <<>>}}
-
             end;
         _ ->
             {next_state, handshaking, Context#context{buffer=MaybeHandshakeResp}}
@@ -257,11 +351,11 @@ handle_info(Msg, State,
     try Handler:websocket_info(Msg, WSReq, HState0) of
         HandlerResponse ->
             case handle_response(HandlerResponse, Handler, Buffer, WSReq) of
-                {ok, WSReqN, HStateN, Buffer} ->
+                {ok, WSReqN, HStateN, BufferN} ->
                     {next_state, State, Context#context{
                                           handler={Handler, HStateN},
                                           wsreq=WSReqN,
-                                          buffer=Buffer}};
+                                          buffer=BufferN}};
                 {close, Reason, WSReqN, Handler, HStateN} ->
                     {stop, Reason, Context#context{
                                      wsreq=WSReqN,
@@ -287,35 +381,22 @@ handle_info(Msg, State,
 code_change(_OldVsn, StateName, Context, _Extra) ->
     {ok, StateName, Context}.
 
-disconnected(connect, #context{
-                         transport=T,
-                         headers = Headers,
-                         handler={Handler, HState0},
-                         target={Protocol, Host, Port, Path}
-                        }=Context) ->
-    case (T#transport.mod):connect(Host, Port, T#transport.opts, 6000) of
-        {ok, Socket} ->
-            WSReq0 = websocket_req:new(
-                Protocol, Host, Port, Path,
-                Socket, T,
-                generate_ws_key()
-            ),
-            {ok, HStateN, KeepAlive} =
-                case Handler:onconnect(WSReq0, HState0) of
-                    {ok, HState1} -> {ok, HState1, infinity};
-                    {ok, _HS1, KA}=Result ->
-                        erlang:send_after(KA, self(), keepalive),
-                        Result
-                end,
-            WSReq1 = websocket_req:keepalive(KeepAlive, WSReq0),
-            ok = send_handshake(WSReq1, Headers),
-            {next_state, handshaking, Context#context{
-                                      handler={Handler, HStateN},
-                                      wsreq=WSReq1}};
-        {error, Reason} ->
-            error_logger:error_msg("Stopping: Unable to open socket: ~p~n", [Reason]),
-            {stop, {error, Reason}, Context}
+disconnected(connect, Context0) ->
+    case connect(Context0) of
+        {ok, Context1} ->
+            {next_state, handshaking, Context1};
+        {error,_}=Error ->
+            {stop, Error, Context0}
     end.
+
+disconnected(connect, _From, Context0) ->
+    case connect(Context0) of
+        {ok, Context1} ->
+            {reply, ok, handshaking, Context1};
+        {error,_}=Error ->
+            {reply, Error, disconnected, Context0}
+    end;
+disconnected(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
 
 handshaking(_Event, Context) -> {next_state, handshaking, Context}.
 
@@ -326,7 +407,6 @@ connected({cast, Frame}, #context{wsreq=WSReq}=Context) ->
     {next_state, connected, Context}.
 
 %% Unsupported sync event handlers
-disconnected(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
 handshaking(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
 
 %% @doc Key sent in initial handshake
@@ -428,8 +508,10 @@ validate_handshake(HandshakeResponse, Key) ->
         % 101 means Switching Protocol
         101 ->
             %% ...and make sure the challenge is valid.
-            Challenge = proplists:get_value(<<"Sec-Websocket-Accept">>, Header),
-            {ok, Buffer};
+            case proplists:get_value(<<"Sec-Websocket-Accept">>, Header) of
+                Challenge -> {ok, Buffer};
+                _Invalid   -> {error, invalid_handshake}
+            end;
         _ -> {error, {Code, Message}}
     end.
 
