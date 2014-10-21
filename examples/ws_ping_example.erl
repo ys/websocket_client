@@ -1,10 +1,11 @@
 -module(ws_ping_example).
 
--behaviour(websocket_client_handler).
+-behaviour(websocket_client).
 
 -export([
          start_link/0,
-         init/2,
+         init/1,
+         onconnect/2,
          websocket_handle/3,
          websocket_info/3,
          websocket_terminate/3
@@ -15,10 +16,13 @@ start_link() ->
     ssl:start(),
     websocket_client:start_link("wss://echo.websocket.org", ?MODULE, []).
 
-init([], _ConnState) ->
+init([]) ->
     websocket_client:cast(self(), {text, <<"message 1">>}),
     %% Execute a ping every 1000 milliseconds
     {ok, 2, 1000}.
+
+onconnect(_WSReq, State) ->
+    {ok, State}.
 
 websocket_handle({pong, _Msg}, _ConnState, State) ->
     io:format("Received pong ~n"),

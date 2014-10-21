@@ -1,10 +1,11 @@
 -module(sample_ws_handler).
 
--behaviour(websocket_client_handler).
+-behaviour(websocket_client).
 
 -export([
          start_link/0,
-         init/2,
+         init/1,
+         onconnect/2,
          websocket_handle/3,
          websocket_info/3,
          websocket_terminate/3
@@ -15,9 +16,12 @@ start_link() ->
     ssl:start(),
     websocket_client:start_link("wss://echo.websocket.org", ?MODULE, []).
 
-init([], _ConnState) ->
+init([]) ->
     websocket_client:cast(self(), {text, <<"message 1">>}),
     {ok, 2}.
+
+onconnect(_WSReq, State) ->
+    {ok, State}.
 
 websocket_handle({pong, _}, _ConnState, State) ->
     {ok, State};
