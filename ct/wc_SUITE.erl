@@ -46,13 +46,15 @@ test_text_frames(_) ->
     Short = short_msg(),
     ws_client:send_text(Pid, Short),
     {text, Short} = ws_client:recv(Pid),
+    ok = ws_client:sync_send_text(Pid, Short),
+    {text, Short} = ws_client:recv(Pid),
     %% Payload length greater than 125 (actual 150).
     Medium = medium_msg(),
     ws_client:send_text(Pid, Medium),
     {text, Medium} = ws_client:recv(Pid),
 
     %% Now check that websocket_client:send is working
-    Pid ! {send_text, Medium},
+    ok = websocket_client:send(Pid, {text, Medium}),
     {text, Medium} = ws_client:recv(Pid),
 
     %% Payload length greater than 65535

@@ -87,9 +87,11 @@ start_link(URL, Handler, HandlerArgs, Opts) when is_list(Opts) ->
             Error
     end.
 
+send(Client, Frame) ->
+    gen_fsm:sync_send_event(Client, {send, Frame}).
+
 %% Send a frame asynchronously
--spec cast(Client :: pid(), Frame :: websocket_req:frame()) ->
-                  ok.
+-spec cast(Client :: pid(), websocket_req:frame()) -> ok.
 cast(Client, Frame) ->
     gen_fsm:send_event(Client, {cast, Frame}).
 
@@ -268,7 +270,7 @@ handle_info(keepalive, KAState, #context{ wsreq=WSReq }=Context)
         undefined -> ok;
         _ -> erlang:cancel_timer(KATimer)
     end,
-    ok = send({ping, <<>>}, WSReq),
+    ok = encode_and_send({ping, <<>>}, WSReq),
     NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
     WSReq1 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq),
     {next_state, KAState, Context#context{wsreq=WSReq1}};
@@ -398,16 +400,20 @@ disconnected(connect, _From, Context0) ->
     end;
 disconnected(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
 
-handshaking(_Event, Context) -> {next_state, handshaking, Context}.
 
-%% TODO Handle sync sending
-connected(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
 connected({cast, Frame}, #context{wsreq=WSReq}=Context) ->
-    ok = send(Frame, WSReq),
+    ok = encode_and_send(Frame, WSReq),
     {next_state, connected, Context}.
 
-%% Unsupported sync event handlers
-handshaking(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
+connected({send, Frame}, _From, #context{wsreq=WSReq}=Context) ->
+    {reply, encode_and_send(Frame, WSReq), connected, Context};
+connected(_Event, _From, Context) ->
+    {reply, {error, unhandled_sync_event}, connected, Context}.
+
+handshaking(_Event, Context) ->
+    {next_state, handshaking, Context}.
+handshaking(_Event, _From, Context) ->
+    {reply, {error, unhandled_sync_event}, handshaking, Context}.
 
 %% @doc Key sent in initial handshake
 -spec generate_ws_key() ->
@@ -434,7 +440,7 @@ send_handshake(WSReq, ExtraHeaders) ->
     (Transport#transport.mod):send(Socket, Handshake).
 
 %% @doc Send frame to server
-send(Frame, WSReq) ->
+encode_and_send(Frame, WSReq) ->
     [Socket, Transport] = websocket_req:get([socket, transport], WSReq),
     (Transport#transport.mod):send(Socket, encode_frame(Frame)).
 
@@ -473,7 +479,7 @@ websocket_close(WSReq, Handler, HandlerState, Reason) ->
 
 %% @doc Handles return values from the callback module
 handle_response({reply, Frame, HandlerState}, Handler, Buffer, WSReq) ->
-    case send(Frame, WSReq) of
+    case encode_and_send(Frame, WSReq) of
         ok ->
            %% we can still have more messages in buffer
            case websocket_req:remaining(WSReq) of
@@ -493,7 +499,7 @@ handle_response({ok, HandlerState}, Handler, Buffer, WSReq) ->
         _ -> {ok, WSReq, HandlerState, Buffer}
     end;
 handle_response({close, Payload, HandlerState}, Handler, _, WSReq) ->
-    ok = send({close, Payload}, WSReq),
+    ok = encode_and_send({close, Payload}, WSReq),
     {close, normal, WSReq, Handler, HandlerState}.
 
 %% @doc Validate handshake response challenge
@@ -589,7 +595,7 @@ retrieve_frame(WSReq, Handler, HState, Opcode, Len, Data, Buffer) ->
     case OpcodeName of
         ping ->
             %% If a ping is received, send a pong automatically
-            ok = send({pong, FullPayload}, WSReq);
+            ok = encode_and_send({pong, FullPayload}, WSReq);
         _ ->
             ok
     end,

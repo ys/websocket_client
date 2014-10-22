@@ -8,6 +8,9 @@
          send_text/2,
          send_binary/2,
          send_ping/2,
+         sync_send_text/2,
+         sync_send_binary/2,
+         sync_send_ping/2,
          recv/2,
          recv/1,
          stop/1
@@ -43,6 +46,15 @@ send_binary(Pid, Msg) ->
 
 send_ping(Pid, Msg) ->
     websocket_client:cast(Pid, {ping, Msg}).
+
+sync_send_text(Pid, Msg) ->
+    websocket_client:send(Pid, {text, Msg}).
+
+sync_send_binary(Pid, Msg) ->
+    websocket_client:send(Pid, {binary, Msg}).
+
+sync_send_ping(Pid, Msg) ->
+    websocket_client:send(Pid, {ping, Msg}).
 
 recv(Pid) ->
     recv(Pid, 5000).
