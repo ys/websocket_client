@@ -17,12 +17,12 @@ start_link() ->
     websocket_client:start_link("wss://echo.websocket.org", ?MODULE, []).
 
 init([]) ->
+    {ok, 1}.
+
+onconnect(_WSReq, 1) ->
     websocket_client:cast(self(), {text, <<"message 1">>}),
     %% Execute a ping every 1000 milliseconds
     {ok, 2, 1000}.
-
-onconnect(_WSReq, State) ->
-    {ok, State}.
 
 websocket_handle({pong, _Msg}, _ConnState, State) ->
     io:format("Received pong ~n"),
