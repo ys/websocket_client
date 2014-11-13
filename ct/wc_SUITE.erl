@@ -9,10 +9,6 @@
          end_per_suite/1
         ]).
 -export([
-         init_per_testcase/2,
-         end_per_testcase/2
-        ]).
--export([
          test_text_frames/1,
          test_binary_frames/1,
          test_control_frames/1,
@@ -43,13 +39,6 @@ init_per_suite(Config) ->
 
 end_per_suite(Config) ->
     Config.
-
-init_per_testcase(_, Config) ->
-    %{ok, _} = echo_server:start(),
-    Config.
-
-end_per_testcase(_, _) ->
-    ok.%ok = echo_server:stop().
 
 test_text_frames(_) ->
     {ok, Pid} = ws_client:start_link(),
