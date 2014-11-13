@@ -9,6 +9,7 @@
 -include("websocket_req.hrl").
 
 -export([start_link/3]).
+-export([start_link/4]).
 -export([cast/2]).
 -export([send/2]).
 
