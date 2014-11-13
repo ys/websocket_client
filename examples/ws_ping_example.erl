@@ -4,17 +4,19 @@
 
 -export([
          start_link/0,
+         start_link/1,
          init/1,
          onconnect/2,
          websocket_handle/3,
          websocket_info/3,
          websocket_terminate/3
         ]).
-
 start_link() ->
+    start_link("ws://localhost:9000").
+start_link(URI) ->
     crypto:start(),
     ssl:start(),
-    websocket_client:start_link("wss://echo.websocket.org", ?MODULE, []).
+    websocket_client:start_link(URI, ?MODULE, []).
 
 init([]) ->
     {ok, 1}.

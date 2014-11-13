@@ -9,6 +9,10 @@
          end_per_suite/1
         ]).
 -export([
+         init_per_testcase/2,
+         end_per_testcase/2
+        ]).
+-export([
          test_text_frames/1,
          test_binary_frames/1,
          test_control_frames/1,
@@ -34,11 +38,18 @@ init_per_suite(Config) ->
     ok = application:start(cowlib),
     ok = application:start(ranch),
     ok = application:start(cowboy),
-    ok = echo_server:start(),
+    {ok,_} = echo_server:start(),
     Config.
 
 end_per_suite(Config) ->
     Config.
+
+init_per_testcase(_, Config) ->
+    %{ok, _} = echo_server:start(),
+    Config.
+
+end_per_testcase(_, _) ->
+    ok.%ok = echo_server:stop().
 
 test_text_frames(_) ->
     {ok, Pid} = ws_client:start_link(),
@@ -85,13 +96,18 @@ test_control_frames(_) ->
     {ok, Pid} = ws_client:start_link(),
     %% Send ping with short message
     Short = short_msg(),
-    ws_client:send_ping(Pid, Short),
+    ok = ws_client:sync_send_ping(Pid, Short),
+    %% Send ping without message
+    %ok = ws_client:sync_send_ping(Pid, <<>>),
     {pong, Short} = ws_client:recv(Pid),
     %% Server will echo the ping as well
     {ping, Short} = ws_client:recv(Pid),
+    %% to which we will reply automatically
+    %% resulting in further pong
     {pong, Short} = ws_client:recv(Pid),
-    %% Send ping without message
-    ws_client:send_ping(Pid, <<>>),
+    ok = ws_client:sync_send_ping(Pid, <<>>),
+    {pong, <<>>} = ws_client:recv(Pid),
+    {ping, <<>>} = ws_client:recv(Pid),
     {pong, <<>>} = ws_client:recv(Pid),
     ws_client:stop(Pid),
     ok.
@@ -138,3 +154,145 @@ long_msg() ->
     L3 = << L2/binary, L2/binary, L2/binary, L2/binary >>,
     %% 76800 bytes
     << L3/binary, L3/binary >>.
+
+%%% 4-bit integer 0-F
+%%% 3-7, B-F unsupported
+%control_opcode() ->
+%    oneof([
+%        16#8, % connection close
+%        16#9, % ping
+%        16#A  % pong
+%      ]).
+%noncontrol_opcode() -> 
+%    oneof([
+%        16#0, % continuation
+%        16#1, % test frame
+%        16#2  % binary frame
+%    ]).
+%
+%opcode() ->
+%    oneof([control_opcode(), noncontrol_opcode()]).
+%
+%websocket_frame() ->
+%    %   0                   1                   2                   3
+%    %   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+%    %  +-+-+-+-+-------+-+-------------+-------------------------------+
+%    %  |F|R|R|R| opcode|M| Payload len |    Extended payload length    |
+%    %  |I|S|S|S|  (4)  |A|     (7)     |             (16/64)           |
+%    %  |N|V|V|V|       |S|             |   (if payload len==126/127)   |
+%    %  | |1|2|3|       |K|             |                               |
+%    %  +-+-+-+-+-------+-+-------------+ - - - - - - - - - - - - - - - +
+%    %  |     Extended payload length continued, if payload len == 127  |
+%    %  + - - - - - - - - - - - - - - - +-------------------------------+
+%    %  |                               |Masking-key, if MASK set to 1  |
+%    %  +-------------------------------+-------------------------------+
+%    %  | Masking-key (continued)       |          Payload Data         |
+%    %  +-------------------------------- - - - - - - - - - - - - - - - +
+%    %  :                     Payload Data continued ...                :
+%    %  + - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - +
+%    %  |                     Payload Data continued ...                |
+%    %  +---------------------------------------------------------------+
+%    Fin  = 1, %% Single frame
+%    RSV  = 0, %% Extensions unsupported
+%    Masked = 1, %% Masking required
+%    %% Extensions as-yet unsupported
+%    OpCode = opcode(),
+%    << Fin:1, RSV:3, OpCode:4, Masked:1, 126:7, Len:16, Key:32, Rest:Len/bits >>,
+%    << Fin:1, RSV:3, OpCode:4, Masked:1, 127:7, 0:1, Len:63, Key:32, Rest:Len/bits >>,
+%    << Fin:1, RSV:3, OpCode:4, Masked:1, Len:7, Key:32, Rest:Len/bits >>.
+%
+%% Control frames cannot be fragments
+%% Non-control frames may be fragmented
+%
+%
+%
+%   %  ws-frame                = frame-fin           ; 1 bit in length
+%   %                            frame-rsv1          ; 1 bit in length
+%   %                            frame-rsv2          ; 1 bit in length
+%   %                            frame-rsv3          ; 1 bit in length
+%   %                            frame-opcode        ; 4 bits in length
+%   %                            frame-masked        ; 1 bit in length
+%   %                            frame-payload-length   ; either 7, 7+16,
+%   %                                                   ; or 7+64 bits in
+%   %                                                   ; length
+%   %                            [ frame-masking-key ]  ; 32 bits in length
+%   %                            frame-payload-data     ; n*8 bits in
+%   %                                                   ; length, where
+%   %                                                   ; n >= 0
+%
+%   %  frame-fin               = %x0 ; more frames of this message follow
+%   %                          / %x1 ; final frame of this message
+%   %                                ; 1 bit in length
+%
+%   %  frame-rsv1              = %x0 / %x1
+%   %                            ; 1 bit in length, MUST be 0 unless
+%   %                            ; negotiated otherwise
+%
+%   %  frame-rsv2              = %x0 / %x1
+%   %                            ; 1 bit in length, MUST be 0 unless
+%   %                            ; negotiated otherwise
+%
+%   %  frame-rsv3              = %x0 / %x1
+%   %                            ; 1 bit in length, MUST be 0 unless
+%   %                            ; negotiated otherwise
+%
+%   %  frame-opcode            = frame-opcode-non-control /
+%   %                            frame-opcode-control /
+%   %                            frame-opcode-cont
+%
+%   %  frame-opcode-cont       = %x0 ; frame continuation
+%
+%   %  frame-opcode-non-control= %x1 ; text frame
+%   %                          / %x2 ; binary frame
+%   %                          / %x3-7
+%   %                          ; 4 bits in length,
+%   %                          ; reserved for further non-control frames
+%
+%   %  frame-opcode-control    = %x8 ; connection close
+%   %                          / %x9 ; ping
+%   %                          / %xA ; pong
+%   %                          / %xB-F ; reserved for further control
+%   %                                  ; frames
+%   %                                  ; 4 bits in length
+%   %  
+%   % frame-masked            = %x0
+%   %                         ; frame is not masked, no frame-masking-key
+%   %                         / %x1
+%   %                         ; frame is masked, frame-masking-key present
+%   %                         ; 1 bit in length
+%
+%   % frame-payload-length    = ( %x00-7D )
+%   %                         / ( %x7E frame-payload-length-16 )
+%   %                         / ( %x7F frame-payload-length-63 )
+%   %                         ; 7, 7+16, or 7+64 bits in length,
+%   %                         ; respectively
+%
+%   % frame-payload-length-16 = %x0000-FFFF ; 16 bits in length
+%
+%   % frame-payload-length-63 = %x0000000000000000-7FFFFFFFFFFFFFFF
+%   %                         ; 64 bits in length
+%
+%   % frame-masking-key       = 4( %x00-FF )
+%   %                           ; present only if frame-masked is 1
+%   %                           ; 32 bits in length
+%
+%   % frame-payload-data      = (frame-masked-extension-data
+%   %                            frame-masked-application-data)
+%   %                         ; when frame-masked is 1
+%   %                           / (frame-unmasked-extension-data
+%   %                             frame-unmasked-application-data)
+%   %                         ; when frame-masked is 0
+%
+%   % frame-masked-extension-data     = *( %x00-FF )
+%   %                         ; reserved for future extensibility
+%   %                         ; n*8 bits in length, where n >= 0
+%
+%   % frame-masked-application-data   = *( %x00-FF )
+%   %                         ; n*8 bits in length, where n >= 0
+%
+%   % frame-unmasked-extension-data   = *( %x00-FF )
+%   %                         ; reserved for future extensibility
+%   %                         ; n*8 bits in length, where n >= 0
+%
+%   % frame-unmasked-application-data = *( %x00-FF )
+%   %                         ; n*8 bits in length, where n >= 0

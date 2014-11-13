@@ -1,1 +1,1 @@
-{incl_mods, [websocket_client, websocket_req]}.
+{incl_mods, [wsc_lib, websocket_client, websocket_req]}.
