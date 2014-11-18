@@ -367,10 +367,8 @@ handle_info({Trans, _Socket, Data},
                                       handler={Handler, HState0},
                                       wsreq=WSReqN,
                                       buffer=BufferN}};
-        {close, Reason, WSReqN, Handler, HStateN} ->
-            {stop, Reason, Context#context{
-                             wsreq=WSReqN,
-                             handler={Handler, HStateN}}}
+        {close, Reason, WSReqN} ->
+            {stop, Reason, Context#context{ wsreq=WSReqN}}
     end;
 handle_info(Msg, State,
             #context{
