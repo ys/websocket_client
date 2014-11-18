@@ -6,6 +6,7 @@
 %% Herein live all the functions for pure data processing.
 -include("src/websocket_req.hrl").
 
+-export([create_auth_header/3]).
 -export([create_handshake/2]).
 -export([encode_frame/1]).
 -export([generate_ws_key/0]).
@@ -13,6 +14,13 @@
 -export([validate_handshake/2]).
 -export([decode_frame/2]).
 -export([decode_frame/5]).
+
+-spec create_auth_header(Type :: basic, User :: binary(), Pass :: binary()) ->
+    {binary(), binary()}.
+create_auth_header(basic, User, Pass) ->
+    PlainAuth = << User/binary, ":", Pass/binary >>,
+    B64Auth = base64:encode(PlainAuth),
+    {<<"Authorization">>, <<"Basic ", B64Auth/binary>>}.
 
 -spec create_handshake(websocket_req:req(), [{string(), string()}]) ->
     iolist().
