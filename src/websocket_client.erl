@@ -31,7 +31,7 @@
 -type state_name() :: atom().
 
 -type state() :: any().
-%-type keepalive() :: integer().
+-type keepalive() :: integer().
 -type close_type() :: normal | error | remote.
 -type reason() :: term().
 
@@ -42,8 +42,9 @@
 
 -callback onconnect(websocket_req:req(), state()) ->
     {ok, state()}
-        | {reply, websocket_req:frame(), state()}
-        | {close, binary(), state()}.
+    | {ok, state(), keepalive()}
+    | {reply, websocket_req:frame(), state()}
+    | {close, binary(), state()}.
 
 -callback ondisconnect(reason(), state()) ->
     {ok, state()}
@@ -160,9 +161,25 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
            case connect(Context0) of
                {error, ConnErr}->
                    {stop, ConnErr};
-               {ok, #context{wsreq=WSReq1}=Context1} ->
+               {ok, #context{
+                       wsreq=WSReq1,
+                       handler={Handler, HState0}
+                      }=Context1} ->
                    case wait_for_handshake(WSReq1) of
-                       {ok, Data} -> {ok, connected, Context1#context{buffer=Data}};
+                       {ok, Data} ->
+                           {ok, HState2, KeepAlive} =
+                               case Handler:onconnect(WSReq1, HState0) of
+                                   {ok, HState1} -> {ok, HState1, infinity};
+                                   {ok, _HS1, KA}=Result ->
+                                       erlang:send_after(KA, self(), keepalive),
+                                       Result
+                               end,
+                           WSReq2 = websocket_req:keepalive(KeepAlive, WSReq1),
+                           {ok, connected, Context1#context{
+                                             wsreq=WSReq2,
+                                             handler={Handler, HState2},
+                                             buffer=Data
+                                            }};
                        {error, HSErr}->
                            {stop, HSErr}
                    end
@@ -185,34 +202,21 @@ terminate(_Reason, _StateName,
     end,
     ok.
 
-connect(TranspMod, Host, Port, TranspOpts, Timeout) ->
-    TranspMod:connect(Host, Port, TranspOpts, Timeout).
-
 connect(#context{
            transport=T,
            wsreq=WSReq0,
            headers=Headers,
-           handler={Handler, HState0},
            target={_Protocol, Host, Port, _Path}
           }=Context) ->
-    case connect(T#transport.mod, Host, Port, T#transport.opts, 6000) of
+    case (T#transport.mod):connect(Host, Port, T#transport.opts, 6000) of
         {ok, Socket} ->
             WSReq1 = websocket_req:socket(Socket, WSReq0),
-            {ok, HStateN, KeepAlive} =
-                case Handler:onconnect(WSReq1, HState0) of
-                    {ok, HState1} -> {ok, HState1, infinity};
-                    {ok, _HS1, KA}=Result ->
-                        erlang:send_after(KA, self(), keepalive),
-                        Result
-                end,
-            WSReq2 = websocket_req:keepalive(KeepAlive, WSReq1),
-            ok = send_handshake(WSReq2, Headers),
-            {ok, Context#context{ handler={Handler, HStateN}, wsreq=WSReq2}};
+            ok = send_handshake(WSReq1, Headers),
+            {ok, Context#context{ wsreq=WSReq1}};
         {error,_}=Error ->
             Error
     end.
 
-%% TODO Split verify/validate out and don't hide the logic!
 wait_for_handshake(WSReq) ->
     wait_for_handshake(<<>>, WSReq).
 wait_for_handshake(Buffer, #websocket_req{
@@ -299,19 +303,31 @@ handle_info({Trans, Socket, Data},
             handshaking,
             #context{
                transport=#transport{ name=Trans },
-               wsreq=WSReq,
+               wsreq=WSReq1,
+               handler={Handler, HState0},
                buffer=Buffer
               }=Context) ->
     MaybeHandshakeResp = << Buffer/binary, Data/binary >>,
-    case wsc_lib:validate_handshake(MaybeHandshakeResp, websocket_req:key(WSReq)) of
+    case wsc_lib:validate_handshake(MaybeHandshakeResp, websocket_req:key(WSReq1)) of
         {error,_}=Error ->
             {stop, Error, Context};
         {notfound, _} ->
             {next_state, handshaking, Context#context{buffer=MaybeHandshakeResp}};
         {ok, Remaining} ->
+            {ok, HState2, KeepAlive} =
+                case Handler:onconnect(WSReq1, HState0) of
+                    {ok, HState1} -> {ok, HState1, infinity};
+                    {ok, _HS1, KA}=Result ->
+                        erlang:send_after(KA, self(), keepalive),
+                        Result
+                end,
+            WSReq2 = websocket_req:keepalive(KeepAlive, WSReq1),
             %% TODO This is nasty and hopefully there's a nicer way
             self() ! {Trans, Socket, Remaining},
-            {next_state, connected, Context#context{buffer = <<>>}}
+            {next_state, connected, Context#context{
+                                      wsreq=WSReq2,
+                                      handler={Handler, HState2},
+                                      buffer = <<>>}}
     end;
 handle_info({Trans, _Socket, Data},
             connected,
