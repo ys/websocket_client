@@ -31,13 +31,14 @@
 -type state_name() :: atom().
 
 -type state() :: any().
--type keepalive() :: integer().
+%-type keepalive() :: integer().
 -type close_type() :: normal | error | remote.
 -type reason() :: term().
 
 -callback init(list()) ->
-    {ok, state()}
-        | {ok, state(), keepalive()}.
+    {ok, state()}.
+    %| {ok, state(), keepalive()}.
+%% TODO FIXME Actually handle the keepalive case
 
 -callback onconnect(websocket_req:req(), state()) ->
     {ok, state()}
