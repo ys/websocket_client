@@ -33,6 +33,7 @@
 -type state() :: any().
 -type keepalive() :: integer().
 -type close_type() :: normal | error | remote.
+-type reason() :: term().
 
 -callback init(list()) ->
     {ok, state()}
@@ -42,6 +43,11 @@
     {ok, state()}
         | {reply, websocket_req:frame(), state()}
         | {close, binary(), state()}.
+
+-callback ondisconnect(reason(), state()) ->
+    {ok, state()}
+        | {reconnect, state()}
+        | {close, reason(), state()}.
 
 -callback websocket_handle({text | binary | ping | pong, binary()}, websocket_req:req(), state()) ->
     {ok, state()}
@@ -277,14 +283,22 @@ handle_info(keepalive, KAState, #context{ wsreq=WSReq }=Context)
     {next_state, KAState, Context#context{wsreq=WSReq1}};
 %% TODO Move Socket into #transport{} from #websocket_req{} so that we can
 %% match on it here
-handle_info({TransClosed, _Socket}, _State,
+handle_info({TransClosed, _Socket}, CurrState,
             #context{
                transport=#transport{ closed=TransClosed },
                wsreq=WSReq,
                handler={Handler, HState0}
               }=Context) ->
-    ok = websocket_close(WSReq, Handler, HState0, {remote, closed}),
-    {stop, socket_closed, Context};
+    case Handler:ondisconnect({remote, closed}, HState0) of
+        {ok, HState1} ->
+            {next_state, disconnected, CurrState, Context#context{handler={Handler, HState1}}};
+        {reconnect, HState1} ->
+            ok = gen_fsm:send_event(self(), connect),
+            {next_state, disconnected, CurrState, Context#context{handler={Handler, HState1}}};
+        {close, Reason, HState1} ->
+            ok = websocket_close(WSReq, Handler, HState1, Reason),
+            {stop, socket_closed, Context#context{handler={Handler, HState1}}}
+    end;
 handle_info({TransError, _Socket, Reason},
             _AnyState,
             #context{

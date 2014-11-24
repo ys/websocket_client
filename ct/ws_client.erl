@@ -19,6 +19,7 @@
 -export([
          init/1,
          onconnect/2,
+         ondisconnect/2,
          websocket_handle/3,
          websocket_info/3,
          websocket_terminate/3
@@ -72,6 +73,9 @@ init(_) ->
 
 onconnect(_WSReq, State) ->
     {ok, State}.
+
+ondisconnect(Reason, State) ->
+    {close, Reason, State}.
 
 websocket_handle(Frame, _, State = #state{waiting = undefined, buffer = Buffer}) ->
     ct:pal("Client added frame ~p to buffer~n", [Frame]),

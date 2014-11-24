@@ -6,6 +6,7 @@
          start_link/0,
          init/1,
          onconnect/2,
+         ondisconnect/2,
          websocket_handle/3,
          websocket_info/3,
          websocket_terminate/3
@@ -22,6 +23,9 @@ init([]) ->
 
 onconnect(_WSReq, State) ->
     {ok, State}.
+
+ondisconnect({remote, closed}, State) ->
+    {reconnect, State}.
 
 websocket_handle({pong, _}, _ConnState, State) ->
     {ok, State};

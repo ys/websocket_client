@@ -7,6 +7,7 @@
          start_link/1,
          init/1,
          onconnect/2,
+         ondisconnect/2,
          websocket_handle/3,
          websocket_info/3,
          websocket_terminate/3
@@ -25,6 +26,9 @@ onconnect(_WSReq, 1) ->
     websocket_client:cast(self(), {text, <<"message 1">>}),
     %% Execute a ping every 1000 milliseconds
     {ok, 2, 1000}.
+
+ondisconnect(Reason, State) ->
+    {close, Reason, State}.
 
 websocket_handle({pong, _Msg}, _ConnState, State) ->
     io:format("Received pong ~n"),
