@@ -39,22 +39,30 @@ create_handshake(WSReq, ExtraHeaders) ->
      "\r\n"].
 
 %% @doc Validate handshake response challenge
--spec validate_handshake(HandshakeResponse :: binary(), Key :: binary()) -> {ok, binary()} | {error, term()}.
+-spec validate_handshake(HandshakeResponse :: binary(), Key :: binary()) ->
+    {ok, binary()}
+    | {notfound, binary()}
+    | {error, term()}.
 validate_handshake(HandshakeResponse, Key) ->
-    Challenge = base64:encode(
-                  crypto:hash(sha, << Key/binary, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" >>)),
-    %% Consume the response...
-    {ok, Status, Header, Buffer} = consume_response(HandshakeResponse),
-    {_Version, Code, Message} = Status,
-    case Code of
-        % 101 means Switching Protocol
-        101 ->
-            %% ...and make sure the challenge is valid.
-            case proplists:get_value(<<"Sec-Websocket-Accept">>, Header) of
-                Challenge -> {ok, Buffer};
-                _Invalid   -> {error, invalid_handshake}
+    case re:run(HandshakeResponse, "\\r\\n\\r\\n") of
+        {match, _} ->
+            Challenge = base64:encode(
+                          crypto:hash(sha, << Key/binary, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" >>)),
+            %% Consume the response...
+            {ok, Status, Header, Buffer} = consume_response(HandshakeResponse),
+            {_Version, Code, Message} = Status,
+            case Code of
+                % 101 means Switching Protocol
+                101 ->
+                    %% ...and make sure the challenge is valid.
+                    case proplists:get_value(<<"Sec-Websocket-Accept">>, Header) of
+                        Challenge -> {ok, Buffer};
+                        _Invalid   -> {error, invalid_handshake}
+                    end;
+                _ -> {error, {Code, Message}}
             end;
-        _ -> {error, {Code, Message}}
+        _ ->
+            {notfound, HandshakeResponse}
     end.
 
 %% @doc Consumes the HTTP response and extracts status, header and the body.

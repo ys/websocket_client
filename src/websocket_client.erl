@@ -226,7 +226,7 @@ wait_for_handshake(Buffer, #websocket_req{
     OptMod:setopts(Socket, [{active, false}]),
     case (T#transport.mod):recv(Socket, 0, 6000) of
         {ok, Data} ->
-            case verify_handshake(<< Buffer/binary, Data/binary >>, WSReq) of
+            case wsc_lib:validate_handshake(<< Buffer/binary, Data/binary >>, websocket_req:key(WSReq)) of
                 {error, _}=VerifyError -> VerifyError;
                 {notfound, Remainder} ->
                     wait_for_handshake(Remainder, WSReq);
@@ -236,20 +236,6 @@ wait_for_handshake(Buffer, #websocket_req{
             end;
         {error, _}=RecvError ->
             RecvError
-    end.
-
-verify_handshake(Data, WSReq) ->
-    case re:run(Data, "\\r\\n\\r\\n") of
-        {match, _} ->
-            case wsc_lib:validate_handshake(Data, websocket_req:key(WSReq)) of
-                {error,_}=Error ->
-                    Error;
-                {ok, Remaining} ->
-                    %% TODO This is nasty and hopefully there's a nicer way
-                    {ok, Remaining}
-            end;
-        _ ->
-            {notfound, Data}
     end.
 
 -spec handle_event(Event :: term(), state_name(), #context{}) ->
@@ -316,19 +302,15 @@ handle_info({Trans, Socket, Data},
                buffer=Buffer
               }=Context) ->
     MaybeHandshakeResp = << Buffer/binary, Data/binary >>,
-    case re:run(MaybeHandshakeResp, "\\r\\n\\r\\n") of
-        {match, _} ->
-            % TODO: I don't think state transitions should happen from handle_info
-            case wsc_lib:validate_handshake(MaybeHandshakeResp, websocket_req:key(WSReq)) of
-                {error,_}=Error ->
-                    {stop, Error, Context};
-                {ok, Remaining} ->
-                    %% TODO This is nasty and hopefully there's a nicer way
-                    self() ! {Trans, Socket, Remaining},
-                    {next_state, connected, Context#context{buffer = <<>>}}
-            end;
-        _ ->
-            {next_state, handshaking, Context#context{buffer=MaybeHandshakeResp}}
+    case wsc_lib:validate_handshake(MaybeHandshakeResp, websocket_req:key(WSReq)) of
+        {error,_}=Error ->
+            {stop, Error, Context};
+        {notfound, _} ->
+            {next_state, handshaking, Context#context{buffer=MaybeHandshakeResp}};
+        {ok, Remaining} ->
+            %% TODO This is nasty and hopefully there's a nicer way
+            self() ! {Trans, Socket, Remaining},
+            {next_state, connected, Context#context{buffer = <<>>}}
     end;
 handle_info({Trans, _Socket, Data},
             connected,
