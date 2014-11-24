@@ -274,7 +274,7 @@ handle_info(keepalive, KAState, #context{ wsreq=WSReq }=Context)
     {next_state, KAState, Context#context{wsreq=WSReq1}};
 %% TODO Move Socket into #transport{} from #websocket_req{} so that we can
 %% match on it here
-handle_info({TransClosed, _Socket}, CurrState,
+handle_info({TransClosed, _Socket}, _CurrState,
             #context{
                transport=#transport{ closed=TransClosed },
                wsreq=WSReq,
@@ -282,10 +282,10 @@ handle_info({TransClosed, _Socket}, CurrState,
               }=Context) ->
     case Handler:ondisconnect({remote, closed}, HState0) of
         {ok, HState1} ->
-            {next_state, disconnected, CurrState, Context#context{handler={Handler, HState1}}};
+            {next_state, disconnected, Context#context{handler={Handler, HState1}}};
         {reconnect, HState1} ->
             ok = gen_fsm:send_event(self(), connect),
-            {next_state, disconnected, CurrState, Context#context{handler={Handler, HState1}}};
+            {next_state, disconnected, Context#context{handler={Handler, HState1}}};
         {close, Reason, HState1} ->
             ok = websocket_close(WSReq, Handler, HState1, Reason),
             {stop, socket_closed, Context#context{handler={Handler, HState1}}}
