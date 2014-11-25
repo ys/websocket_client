@@ -426,8 +426,8 @@ disconnected(connect, Context0) ->
     case connect(Context0) of
         {ok, Context1} ->
             {next_state, handshaking, Context1};
-        {error,_}=Error ->
-            {stop, Error, Context0}
+        {error, _Error} ->
+            {next_state, disconnected, Context0}
     end.
 
 disconnected(connect, _From, Context0) ->
