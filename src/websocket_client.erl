@@ -440,8 +440,12 @@ disconnected(connect, _From, Context0) ->
 disconnected(_Event, _From, Context) -> {stop, unhandled_sync_event, Context}.
 
 connected({cast, Frame}, #context{wsreq=WSReq}=Context) ->
-    ok = encode_and_send(Frame, WSReq),
-    {next_state, connected, Context}.
+    case encode_and_send(Frame, WSReq) of
+        ok ->
+            {next_state, connected, Context};
+        {error, closed} ->
+            {next_state, disconnected, Context}
+    end.
 
 connected({send, Frame}, _From, #context{wsreq=WSReq}=Context) ->
     {reply, encode_and_send(Frame, WSReq), connected, Context};
