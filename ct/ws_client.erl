@@ -8,6 +8,9 @@
          send_text/2,
          send_binary/2,
          send_ping/2,
+         sync_send_text/2,
+         sync_send_binary/2,
+         sync_send_ping/2,
          recv/2,
          recv/1,
          stop/1
@@ -16,6 +19,7 @@
 -export([
          init/1,
          onconnect/2,
+         ondisconnect/2,
          websocket_handle/3,
          websocket_info/3,
          websocket_terminate/3
@@ -44,6 +48,15 @@ send_binary(Pid, Msg) ->
 send_ping(Pid, Msg) ->
     websocket_client:cast(Pid, {ping, Msg}).
 
+sync_send_text(Pid, Msg) ->
+    websocket_client:send(Pid, {text, Msg}).
+
+sync_send_binary(Pid, Msg) ->
+    websocket_client:send(Pid, {binary, Msg}).
+
+sync_send_ping(Pid, Msg) ->
+    websocket_client:send(Pid, {ping, Msg}).
+
 recv(Pid) ->
     recv(Pid, 5000).
 
@@ -61,18 +74,17 @@ init(_) ->
 onconnect(_WSReq, State) ->
     {ok, State}.
 
+ondisconnect(Reason, State) ->
+    {close, Reason, State}.
+
 websocket_handle(Frame, _, State = #state{waiting = undefined, buffer = Buffer}) ->
-    ct:pal("Client received frame~n"),
-    {ok, State#state{buffer = [Frame|Buffer]}};
+    ct:pal("Client added frame ~p to buffer~n", [Frame]),
+    {ok, State#state{buffer = Buffer++[Frame]}};
 websocket_handle(Frame, _, State = #state{waiting = From}) ->
-    ct:pal("Client received frame~n"),
+    ct:pal("Client forwarded frame ~p to ~p ~n", [Frame, From]),
     From ! Frame,
     {ok, State#state{waiting = undefined}}.
 
-websocket_info({send_text, Text}, WSReq, State) ->
-    ct:pal("Sending text: ~p~n", [Text]),
-    websocket_client:send({text, Text}, WSReq),
-    {ok, State};
 websocket_info({recv, From}, _, State = #state{buffer = []}) ->
     {ok, State#state{waiting = From}};
 websocket_info({recv, From}, _, State = #state{buffer = [Top|Rest]}) ->

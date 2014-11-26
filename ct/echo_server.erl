@@ -3,7 +3,8 @@
 -behaviour(cowboy_websocket_handler).
 
 -export([
-         start/0
+         start/0,
+         stop/0
         ]).
 
 -export([
@@ -26,8 +27,10 @@ start() ->
                                                    {port, 8080},
                                                    {max_connections, 100}
                                                   ],
-                                [{env, [{dispatch, Dispatch}]}]),
-    ok.
+                                [{env, [{dispatch, Dispatch}]}]).
+
+stop() ->
+    cowboy:stop_listener(echo_listener).
 
 init(_, _Req, _Opts) ->
     {upgrade, protocol, cowboy_websocket}.
@@ -50,7 +53,7 @@ websocket_init(_Transport, Req, _Opts) ->
     end.
 
 websocket_handle(Frame, Req, State) ->
-    ct:pal("~p received frame~n", [?MODULE]),
+    ct:pal("~p replying with frame ~p~n", [?MODULE, Frame]),
     {reply, Frame, Req, State}.
 
 websocket_info({send, Text}, Req, State) ->
@@ -58,6 +61,7 @@ websocket_info({send, Text}, Req, State) ->
     {reply, {text, Text}, Req, State};
 
 websocket_info(_Msg, Req, State) ->
+    ct:pal("~p received OoB msg: ~p~n", [?MODULE, _Msg]),
     {ok, Req, State}.
 
 websocket_terminate(Reason, _Req, _State) ->
