@@ -323,7 +323,10 @@ handle_info({Trans, Socket, Data},
                 end,
             WSReq2 = websocket_req:keepalive(KeepAlive, WSReq1),
             %% TODO This is nasty and hopefully there's a nicer way
-            self() ! {Trans, Socket, Remaining},
+            case Remaining of
+                <<>> -> ok;
+                _ -> self() ! {Trans, Socket, Remaining}
+            end,
             {next_state, connected, Context#context{
                                       wsreq=WSReq2,
                                       handler={Handler, HState2},
@@ -355,10 +358,14 @@ handle_info({Trans, _Socket, Data},
                 WSReqN2 = websocket_req:remaining(undefined, WSReqN),
                 case handle_response(HandlerResponse, Handler, BufferN, WSReqN2) of
                     {ok, WSReqN2, HStateN2, BufferN2} ->
+                        case BufferN2 of
+                            <<>> -> ok;
+                            _ -> self() ! {Trans, _Socket, BufferN2}
+                        end,
                         {next_state, connected, Context#context{
                                                   handler={Handler, HStateN2},
                                                   wsreq=WSReqN2,
-                                                  buffer=BufferN2}};
+                                                  buffer= <<>>}};
                     {close, Error, WSReqN2, Handler, HStateN2} ->
                         {stop, Error, Context#context{
                                          wsreq=WSReqN2,
