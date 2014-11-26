@@ -1,6 +1,6 @@
 # Erlang Websocket Client
 
-[![Build Status](https://travis-ci.org/jeremyong/websocket_client.svg?branch=master)](https://travis-ci.org/jeremyong/websocket_client)
+[![Build Status](https://travis-ci.org/sanmiguel/websocket_client.svg?branch=master)](https://travis-ci.org/sanmiguel/websocket_client)
 
 ## Existing features
 
