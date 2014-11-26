@@ -105,11 +105,11 @@ test_quick_response(_) ->
     %% Connect to the server and...
     {ok, Pid} = ws_client:start_link("ws://localhost:8080/hello/?q=world!"),
     %% ...make sure we receive the first frame.
-    {text, <<"world!">>} = ws_client:recv(Pid, 100),
+    {text, <<"world!">>} = ws_client:recv(Pid, 500),
     ws_client:stop(Pid),
     %% Also, make sure the HTTP response is parsed correctly.
     {ok, Pid2} = ws_client:start_link("ws://localhost:8080/hello/?q=Hello%0D%0A%0D%0AWorld%0D%0A%0D%0A!"),
-    {text, <<"Hello\r\n\r\nWorld\r\n\r\n!">>} = ws_client:recv(Pid2, 100),
+    {text, <<"Hello\r\n\r\nWorld\r\n\r\n!">>} = ws_client:recv(Pid2, 500),
     ws_client:stop(Pid2),
     ok.
 
