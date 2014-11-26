@@ -31,7 +31,6 @@ create_handshake(WSReq, ExtraHeaders) ->
     ["GET ", Path, " HTTP/1.1\r\n"
      "Host: ", Host, "\r\n"
      "Connection: Upgrade\r\n"
-     "Origin: ", atom_to_binary(Protocol, utf8), "://", Host, "\r\n"
      "Sec-WebSocket-Version: 13\r\n"
      "Sec-WebSocket-Key: ", Key, "\r\n"
      "Upgrade: websocket\r\n",
