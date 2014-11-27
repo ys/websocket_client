@@ -4,7 +4,7 @@
 
 -export([
          start_link/0,
-         start_link/2,
+         start_link/1,
          send_text/2,
          send_binary/2,
          send_ping/2,
@@ -31,10 +31,10 @@
          }).
 
 start_link() ->
-    start_link("ws://localhost:8080", false).
+    {ok, _} = start_link("ws://localhost:8080").
 
-start_link(Url, Async) ->
-    websocket_client:start_link(Url, ?MODULE, [], Async).
+start_link(Url) ->
+    {ok, _} = websocket_client:start_link(Url, ?MODULE, [self()]).
 
 stop(Pid) ->
     Pid ! stop.
@@ -68,10 +68,11 @@ recv(Pid, Timeout) ->
         Timeout -> error
     end.
 
-init(_) ->
-    {ok, #state{}}.
+init([Waiting]) ->
+    {reconnect, #state{waiting=Waiting}}.
 
 onconnect(_WSReq, State) ->
+    State#state.waiting ! {ok, self()},
     {ok, State}.
 
 ondisconnect(Reason, State) ->
