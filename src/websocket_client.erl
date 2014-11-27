@@ -31,12 +31,13 @@
 -type state_name() :: atom().
 
 -type state() :: any().
--type keepalive() :: integer().
+-type keepalive() :: non_neg_integer().
 -type close_type() :: normal | error | remote.
 -type reason() :: term().
 
 -callback init(list()) ->
-    {ok, state()}.
+    {ok, state()}
+    | {reconnect, state()}.
     %| {ok, state(), keepalive()}.
 %% TODO FIXME Actually handle the keepalive case
 
@@ -48,18 +49,18 @@
 
 -callback ondisconnect(reason(), state()) ->
     {ok, state()}
-        | {reconnect, state()}
-        | {close, reason(), state()}.
+    | {reconnect, state()}
+    | {close, reason(), state()}.
 
 -callback websocket_handle({text | binary | ping | pong, binary()}, websocket_req:req(), state()) ->
     {ok, state()}
-        | {reply, websocket_req:frame(), state()}
-        | {close, binary(), state()}.
+    | {reply, websocket_req:frame(), state()}
+    | {close, binary(), state()}.
 
 -callback websocket_info(any(), websocket_req:req(), state()) ->
     {ok, state()}
-        | {reply, websocket_req:frame(), state()}
-        | {close, binary(),  state()}.
+    | {reply, websocket_req:frame(), state()}
+    | {close, binary(),  state()}.
 
 -callback websocket_terminate({close_type(), term()} | {close_type(), integer(), binary()},
                               websocket_req:req(), state()) ->
@@ -74,7 +75,8 @@
                       Host :: string(), Port :: non_neg_integer(),
                       Path :: string()},
          handler   :: {module(), HState :: term()},
-         buffer = <<>> :: binary()
+         buffer = <<>> :: binary(),
+         reconnect :: boolean()
         }).
 
 %% @doc Start the websocket client
@@ -109,8 +111,10 @@ cast(Client, Frame) ->
     %% NB DO NOT try to use Timeout to do keepalive.
     | {stop, Reason :: term()}.
 init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
-    {ok, HState} = Handler:init(HandlerArgs), %% TODO More rigorous checks of return values
-                                       %% e.g. {error, Reason}
+    {Reconnect, HState} = case Handler:init(HandlerArgs) of
+        {ok, State} -> {false, State};
+        {reconnect, State} -> {true, State}
+    end,
     AsyncStart = proplists:get_value(async_start, Opts, false),
     Transport =
         case Protocol of
@@ -145,10 +149,11 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
             ),
     Context0 = #context{
                   transport = Transport,
-                  headers = proplists:get_value(extra_headers, Opts, []),
-                  wsreq   = WSReq,
-                  target  = {Protocol, Host, Port, Path},
-                  handler = {Handler, HState}
+                  headers   = proplists:get_value(extra_headers, Opts, []),
+                  wsreq     = WSReq,
+                  target    = {Protocol, Host, Port, Path},
+                  handler   = {Handler, HState},
+                  reconnect = Reconnect
                  },
     if AsyncStart ->
            %% In async start mode, we return as quickly as possible, letting handshaking
@@ -206,7 +211,8 @@ connect(#context{
            transport=T,
            wsreq=WSReq0,
            headers=Headers,
-           target={_Protocol, Host, Port, _Path}
+           target={_Protocol, Host, Port, _Path},
+           reconnect=Reconnect
           }=Context) ->
     case (T#transport.mod):connect(Host, Port, T#transport.opts, 6000) of
         {ok, Socket} ->
@@ -214,6 +220,12 @@ connect(#context{
             ok = send_handshake(WSReq1, Headers),
             {ok, Context#context{ wsreq=WSReq1}};
         {error,_}=Error ->
+            case Reconnect of
+                true ->
+                    gen_fsm:send_event(self(), connect);
+                false ->
+                    ok
+            end,
             Error
     end.
 
