@@ -4,7 +4,7 @@
 
 -export([
          start_link/0,
-         start_link/1,
+         start_link/2,
          send_text/2,
          send_binary/2,
          send_ping/2,
@@ -31,10 +31,10 @@
          }).
 
 start_link() ->
-    start_link("ws://localhost:8080").
+    start_link("ws://localhost:8080", false).
 
-start_link(Url) ->
-    websocket_client:start_link(Url, ?MODULE, []).
+start_link(Url, Async) ->
+    websocket_client:start_link(Url, ?MODULE, [], Async).
 
 stop(Pid) ->
     Pid ! stop.
