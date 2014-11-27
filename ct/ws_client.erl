@@ -77,18 +77,18 @@ onconnect(_WSReq, State) ->
 ondisconnect(Reason, State) ->
     {close, Reason, State}.
 
-websocket_handle(Frame, _, State = #state{waiting = undefined, buffer = Buffer}) ->
-    ct:pal("Client added frame ~p to buffer~n", [Frame]),
+websocket_handle({Type, Payload}=Frame, _, State = #state{waiting = undefined, buffer = Buffer}) ->
+    ct:pal("Client added ~p to buffer of size ~p~n", [Type, byte_size(Payload)]),
     {ok, State#state{buffer = Buffer++[Frame]}};
-websocket_handle(Frame, _, State = #state{waiting = From}) ->
-    ct:pal("Client forwarded frame ~p to ~p ~n", [Frame, From]),
+websocket_handle({Type,Payload}=Frame, _, State = #state{waiting = From}) ->
+    ct:pal("Client forwarded ~p of size ~p to ~p ~n", [Type, byte_size(Payload), From]),
     From ! Frame,
     {ok, State#state{waiting = undefined}}.
 
 websocket_info({recv, From}, _, State = #state{buffer = []}) ->
     {ok, State#state{waiting = From}};
 websocket_info({recv, From}, _, State = #state{buffer = [Top|Rest]}) ->
-    ct:pal("Receiving from: ~p~n", [From]),
+    ct:pal("Sending buffer hd to: ~p {Buffer: ~p}~n", [From, [Top|Rest]]),
     From ! Top,
     {ok, State#state{buffer = Rest}};
 websocket_info(stop, _, State) ->
