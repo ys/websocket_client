@@ -42,6 +42,7 @@ end_per_suite(Config) ->
 
 test_text_frames(_) ->
     {ok, Pid} = ws_client:start_link(),
+    receive {ok, Pid} -> ok after 5000 -> recv_timeout end,
     %% Short message
     Short = short_msg(),
     ws_client:send_text(Pid, Short),
@@ -66,6 +67,7 @@ test_text_frames(_) ->
 
 test_binary_frames(_) ->
     {ok, Pid} = ws_client:start_link(),
+    receive {ok, Pid} -> ok after 5000 -> recv_timeout end,
     %% Short message
     Short = short_msg(),
     ws_client:send_binary(Pid, Short),
@@ -83,6 +85,7 @@ test_binary_frames(_) ->
 
 test_control_frames(_) ->
     {ok, Pid} = ws_client:start_link(),
+    receive {ok, Pid} -> ok after 5000 -> recv_timeout end,
     %% Send ping with short message
     Short = short_msg(),
     ok = ws_client:sync_send_ping(Pid, Short),
@@ -104,11 +107,13 @@ test_control_frames(_) ->
 test_quick_response(_) ->
     %% Connect to the server and...
     {ok, Pid} = ws_client:start_link("ws://localhost:8080/hello/?q=world!"),
+    receive {ok, Pid} -> ok after 5000 -> recv_timeout end,
     %% ...make sure we receive the first frame.
     {text, <<"world!">>} = ws_client:recv(Pid, 500),
     ws_client:stop(Pid),
     %% Also, make sure the HTTP response is parsed correctly.
     {ok, Pid2} = ws_client:start_link("ws://localhost:8080/hello/?q=Hello%0D%0A%0D%0AWorld%0D%0A%0D%0A!"),
+    receive {ok, Pid2} -> ok after 5000 -> recv_timeout end,
     {text, <<"Hello\r\n\r\nWorld\r\n\r\n!">>} = ws_client:recv(Pid2, 500),
     ws_client:stop(Pid2),
     ok.
@@ -118,9 +123,22 @@ test_bad_request(_) ->
     %% receive the error reason properly
     process_flag(trap_exit, true),
     %% Connect to the server and wait for a error
-    {error, {400, <<"Bad Request">>}} =  ws_client:start_link("ws://localhost:8080/hello/?code=400"),
-    {error, {403, <<"Forbidden">>}} =  ws_client:start_link("ws://localhost:8080/hello/?code=403"),
-    ok.
+    %% Don't forget this behaviour is largely controlled by the handler
+    %% A different handler might just reconnect, but this one terminates.
+    {ok, Pid400} =  ws_client:start_link("ws://localhost:8080/hello/?code=400"),
+    receive
+        {'EXIT', Pid400, {error, {400, <<"Bad Request">>}} } ->
+            ok
+    after 1000 ->
+              ct:fail(timeout)
+    end,
+    {ok, Pid403} =  ws_client:start_link("ws://localhost:8080/hello/?code=403"),
+    receive
+        {'EXIT', Pid403, {error, {403, <<"Forbidden">>}}} ->
+            ok
+    after 1000 ->
+              ct:fail(timeout)
+    end.
 
 short_msg() ->
     <<"hello">>.

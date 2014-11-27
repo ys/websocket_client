@@ -24,6 +24,7 @@ start() ->
                                              {'_', ?MODULE, []}
                                             ]}]),
     {ok, _} = cowboy:start_http(echo_listener, 2, [
+                                                   {nodelay, true},
                                                    {port, 8080},
                                                    {max_connections, 100}
                                                   ],
@@ -52,12 +53,13 @@ websocket_init(_Transport, Req, _Opts) ->
             {shutdown, Req3}
     end.
 
-websocket_handle(Frame, Req, State) ->
-    ct:pal("~p replying with frame ~p~n", [?MODULE, Frame]),
+websocket_handle({Type, Payload}=Frame, Req, State) ->
+    ct:pal("~p replying with ~p of size ~p~n", [?MODULE, Type, byte_size(Payload)]),
     {reply, Frame, Req, State}.
 
 websocket_info({send, Text}, Req, State) ->
-    ct:pal("~p sent frame~n", [?MODULE]),
+    timer:sleep(1),
+    ct:pal("~p sent frame of size ~p ~n", [?MODULE, byte_size(Text)]),
     {reply, {text, Text}, Req, State};
 
 websocket_info(_Msg, Req, State) ->

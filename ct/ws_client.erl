@@ -31,10 +31,10 @@
          }).
 
 start_link() ->
-    start_link("ws://localhost:8080").
+    {ok, _} = start_link("ws://localhost:8080").
 
 start_link(Url) ->
-    websocket_client:start_link(Url, ?MODULE, []).
+    {ok, _} = websocket_client:start_link(Url, ?MODULE, [self()]).
 
 stop(Pid) ->
     Pid ! stop.
@@ -68,27 +68,28 @@ recv(Pid, Timeout) ->
         Timeout -> error
     end.
 
-init(_) ->
-    {ok, #state{}}.
+init([Waiting]) ->
+    {reconnect, #state{waiting=Waiting}}.
 
 onconnect(_WSReq, State) ->
+    State#state.waiting ! {ok, self()},
     {ok, State}.
 
 ondisconnect(Reason, State) ->
     {close, Reason, State}.
 
-websocket_handle(Frame, _, State = #state{waiting = undefined, buffer = Buffer}) ->
-    ct:pal("Client added frame ~p to buffer~n", [Frame]),
+websocket_handle({Type, Payload}=Frame, _, State = #state{waiting = undefined, buffer = Buffer}) ->
+    ct:pal("Client added ~p to buffer of size ~p~n", [Type, byte_size(Payload)]),
     {ok, State#state{buffer = Buffer++[Frame]}};
-websocket_handle(Frame, _, State = #state{waiting = From}) ->
-    ct:pal("Client forwarded frame ~p to ~p ~n", [Frame, From]),
+websocket_handle({Type,Payload}=Frame, _, State = #state{waiting = From}) ->
+    ct:pal("Client forwarded ~p of size ~p to ~p ~n", [Type, byte_size(Payload), From]),
     From ! Frame,
     {ok, State#state{waiting = undefined}}.
 
 websocket_info({recv, From}, _, State = #state{buffer = []}) ->
     {ok, State#state{waiting = From}};
 websocket_info({recv, From}, _, State = #state{buffer = [Top|Rest]}) ->
-    ct:pal("Receiving from: ~p~n", [From]),
+    ct:pal("Sending buffer hd to: ~p {Buffer: ~p}~n", [From, [Top|Rest]]),
     From ! Top,
     {ok, State#state{buffer = Rest}};
 websocket_info(stop, _, State) ->
