@@ -25,9 +25,7 @@ create_auth_header(basic, User, Pass) ->
 -spec create_handshake(websocket_req:req(), [{string(), string()}]) ->
     iolist().
 create_handshake(WSReq, ExtraHeaders) ->
-    [_Protocol, Path, Host, Port, Key] =
-        websocket_req:get([protocol, path, host, port, key], WSReq),
-    error_logger:info_msg("DBG: Port: ~p~n", [Port]),
+    [Path, Host, Key] = websocket_req:get([path, host, key], WSReq),
     ["GET ", Path, " HTTP/1.1\r\n"
      "Host: ", Host, "\r\n"
      "Connection: Upgrade\r\n"
