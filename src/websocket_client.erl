@@ -424,7 +424,7 @@ handle_response({reply, Frame, HandlerState}, Handler, Buffer, WSReq) ->
         Reason -> {close, Reason, WSReq, Handler, HandlerState}
     end;
 handle_response({close, Payload, HandlerState}, Handler, _, WSReq) ->
-    ok = encode_and_send({close, Payload}, WSReq),
+    encode_and_send({close, Payload}, WSReq),
     {close, normal, WSReq, Handler, HandlerState}.
 
 %% @doc Send http upgrade request and validate handshake response challenge
