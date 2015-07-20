@@ -5,25 +5,28 @@
 ## Existing features
 
 1. Client to Server Masking
-2. gen_server like callback behaviour
+2. OTP compliant
+3. Callback-driven behaviour
 3. Handshake validation
-4. tcp and ssl support
+4. TCP and SSL support
 5. Handling of text, binary, ping, pong, and close frames
 6. Handling of continuation frames
+7. Automated ping/pong and keepalive
 
 ## Usage
 
-For basic usage, please see the source files in the `examples/`
-directory. Writing a handler is easy:
+For basic usage, see `examples/sample_ws_handler.erl`:
 
 ```erlang
 -module(sample_ws_handler).
 
--behaviour(websocket_client_handler).
+-behaviour(websocket_client).
 
 -export([
          start_link/0,
-         init/2,
+         init/1,
+         onconnect/2,
+         ondisconnect/2,
          websocket_handle/3,
          websocket_info/3,
          websocket_terminate/3
@@ -34,15 +37,21 @@ start_link() ->
     ssl:start(),
     websocket_client:start_link("wss://echo.websocket.org", ?MODULE, []).
 
-init([], _ConnState) ->
+init([]) ->
+    {once, 2}.
+
+onconnect(_WSReq, State) ->
     websocket_client:cast(self(), {text, <<"message 1">>}),
-    {ok, 2}.
+    {ok, State}.
+
+ondisconnect({remote, closed}, State) ->
+    {reconnect, State}.
 
 websocket_handle({pong, _}, _ConnState, State) ->
     {ok, State};
 websocket_handle({text, Msg}, _ConnState, 5) ->
     io:format("Received msg ~p~n", [Msg]),
-    {close, <<>>, 10};
+    {close, <<>>, "done"};
 websocket_handle({text, Msg}, _ConnState, State) ->
     io:format("Received msg ~p~n", [Msg]),
     timer:sleep(1000),
@@ -52,28 +61,21 @@ websocket_handle({text, Msg}, _ConnState, State) ->
 websocket_info(start, _ConnState, State) ->
     {reply, {text, <<"erlang message received">>}, State}.
 
-websocket_terminate({close, Code, Payload}, _ConnState, State) ->
-    io:format("Websocket closed in state ~p wih code ~p and payload ~p~n",
-              [State, Code, Payload]),
+websocket_terminate(Reason, _ConnState, State) ->
+    io:format("Websocket closed in state ~p wih reason ~p~n",
+              [State, Reason]),
     ok.
 ```
 
 The above code will send messages to the echo server that count up
-from 1. It will also print all replies from the server:
+from 1 through 4. It will also print all replies from the server:
 
 ```
 Received msg <<"this is message 1">>
+Received msg <<"hello, this is message #2">>
 Received msg <<"hello, this is message #3">>
 Received msg <<"hello, this is message #4">>
-Received msg <<"hello, this is message #5">>
-Received msg <<"hello, this is message #6">>
-...
 ```
-
-Erlang is typically used to write server applications. Now that
-applications like `cowboy` supporting websocket applications are more
-commonplace, it is important to have a compliant websocket client for
-benchmarking and debugging purposes.
 
 This client implements a cowboy like `websocket_client_handler` to
 interact with a websocket server. Currently, it can connect via tcp or
@@ -82,16 +84,8 @@ contiguous text or binary websocket frames.
 
 ## TODO
 
-The client as is is still missing a lot of functionality. We still
-need to:
+The client has been significantly reworked, now backed by `gen_fsm`. There may still be bugs.
+Please report them.
 
-1. Close the connection in a number of error cases (malformed headers,
-etc).
-2. Add tests!! (hint hint)
-3. Stop using `verify_none` by default
-
-This is being released without the above functionality in case it is
-useful as is for benchmarking or debugging as mentioned above (this is
-the case for me). The hope is that the community (and me, as time
-permits) will contribute key pieces to the codebase so that the major
-pieces are taken care of.
+1. Stop using `verify_none` by default
+2. Add more complete testing - preferably based on / using Autobahn.

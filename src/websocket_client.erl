@@ -1,7 +1,7 @@
--module(websocket_client).
 %% @author Jeremy Ong
 %% @author Michael Coles
 %% @doc Erlang websocket client (FSM implementation)
+-module(websocket_client).
 
 -behaviour(gen_fsm).
 %-compile([export_all]).
@@ -35,34 +35,55 @@
 -type close_type() :: normal | error | remote.
 -type reason() :: term().
 
+% Create handler state based on options.
 -callback init(list()) ->
-    {ok, state()}
-    | {once, state()}
-    | {reconnect, state()}.
-    %| {ok, state(), keepalive()}.
-%% TODO FIXME Actually handle the keepalive case
+    {ok, state()} % Will start `disconnected`.
+    | {once, state()} % Will attempt to connect once only.
+    | {reconnect, state()}. % Will keep trying to connect.
 
+% Called when a websocket connection is established, including
+% successful handshake with the other end.
 -callback onconnect(websocket_req:req(), state()) ->
-    {ok, state()}
+    % Simple client: only server-initiated pings will be
+    % automatically responded to.
+    {ok, state()} 
+    % Keepalive client: will automatically initiate a ping to the server
+    % every keepalive() ms.
     | {ok, state(), keepalive()}
+    % Immediately send a message to the server.
     | {reply, websocket_req:frame(), state()}
+    % Close the connection.
     | {close, binary(), state()}.
 
+% Called when the socket is closed for any reason.
 -callback ondisconnect(reason(), state()) ->
+    % Return to `disconnected` state but keep process alive.
     {ok, state()}
+    % Immediately attempt to reconnect.
     | {reconnect, state()}
+    % Shut the process down cleanly.
     | {close, reason(), state()}.
 
+% Called for every received frame from the server.
+% NB this will also get called for pings, which are automatically ponged.
 -callback websocket_handle({text | binary | ping | pong, binary()}, websocket_req:req(), state()) ->
+    % Do nothing.
     {ok, state()}
+    % Send the given frame to the server.
     | {reply, websocket_req:frame(), state()}
+    % Shut the process down cleanly.
     | {close, binary(), state()}.
 
+% Called for any received erlang message.
 -callback websocket_info(any(), websocket_req:req(), state()) ->
+    % Do nothing.
     {ok, state()}
+    % Send the given frame to the server.
     | {reply, websocket_req:frame(), state()}
+    % Shut the process down cleanly.
     | {close, binary(),  state()}.
 
+% Called when the process exits abnormally.
 -callback websocket_terminate({close_type(), term()} | {close_type(), integer(), binary()},
                               websocket_req:req(), state()) ->
     ok.
@@ -81,11 +102,21 @@
         }).
 
 %% @doc Start the websocket client
+%%
+%% URL : Supported schema: (ws | wss)
+%% Handler: module()
+%% Args : arguments to pass to Handler:init/1
 -spec start_link(URL :: string(), Handler :: module(), Args :: list()) ->
     {ok, pid()} | {error, term()}.
 start_link(URL, Handler, Args) ->
     start_link(URL, Handler, Args, []).
 
+%% @doc Start the websocket client
+%%
+%% Supported Opts:
+%%  - {keepalive, integer()}:  keepalive timeout in ms
+%%  - {extra_headers, list({K, V})}: a kv-list of headers to send in the handshake
+%% (useful if you need to add an e.g. 'Origin' header on connection.
 start_link(URL, Handler, HandlerArgs, Opts) when is_list(Opts) ->
     case http_uri:parse(URL, [{scheme_defaults, [{ws,80},{wss,443}]}]) of
         {ok, {Protocol, _, Host, Port, Path, Query}} ->
