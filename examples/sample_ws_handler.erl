@@ -18,10 +18,10 @@ start_link() ->
     websocket_client:start_link("wss://echo.websocket.org", ?MODULE, []).
 
 init([]) ->
-    websocket_client:cast(self(), {text, <<"message 1">>}),
-    {ok, 2}.
+    {once, 2}.
 
 onconnect(_WSReq, State) ->
+    websocket_client:cast(self(), {text, <<"message 1">>}),
     {ok, State}.
 
 ondisconnect({remote, closed}, State) ->

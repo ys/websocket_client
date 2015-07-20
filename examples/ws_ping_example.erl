@@ -20,7 +20,7 @@ start_link(URI) ->
     websocket_client:start_link(URI, ?MODULE, []).
 
 init([]) ->
-    {ok, 1}.
+    {once, 1}.
 
 onconnect(_WSReq, 1) ->
     websocket_client:cast(self(), {text, <<"message 1">>}),
