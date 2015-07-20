@@ -53,6 +53,9 @@ websocket_init(_Transport, Req, _Opts) ->
             {shutdown, Req3}
     end.
 
+websocket_handle({ping, Payload}=_Frame, Req, State) ->
+    ct:pal("~p pingpong with size ~p~n", [?MODULE, byte_size(Payload)]),
+    {ok, Req, State};
 websocket_handle({Type, Payload}=Frame, Req, State) ->
     ct:pal("~p replying with ~p of size ~p~n", [?MODULE, Type, byte_size(Payload)]),
     {reply, Frame, Req, State}.

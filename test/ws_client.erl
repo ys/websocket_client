@@ -5,6 +5,7 @@
 -export([
          start_link/0,
          start_link/1,
+         start_link/2,
          send_text/2,
          send_binary/2,
          send_ping/2,
@@ -35,6 +36,9 @@ start_link() ->
 
 start_link(Url) ->
     {ok, _} = websocket_client:start_link(Url, ?MODULE, [self()]).
+
+start_link(Url, KeepAlive) ->
+    {ok, _} = websocket_client:start_link(Url, ?MODULE, [self()], [{keepalive, KeepAlive}]).
 
 stop(Pid) ->
     Pid ! stop.

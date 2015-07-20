@@ -13,7 +13,8 @@
          test_binary_frames/1,
          test_control_frames/1,
          test_quick_response/1,
-         test_bad_request/1
+         test_bad_request/1,
+         test_keepalive_opt/1
         ]).
 
 all() ->
@@ -22,22 +23,17 @@ all() ->
      test_binary_frames,
      test_control_frames,
      test_quick_response,
-     test_bad_request
+     test_bad_request,
+     test_keepalive_opt
     ].
 
 init_per_suite(Config) ->
-    ok = application:start(sasl),
-    ok = application:start(asn1),
-    ok = crypto:start(),
-    ok = application:start(public_key),
-    ok = application:start(ssl),
-    ok = application:start(cowlib),
-    ok = application:start(ranch),
-    ok = application:start(cowboy),
+    {ok, Apps} = application:ensure_all_started(cowboy),
     {ok,_} = echo_server:start(),
-    Config.
+    [{apps, Apps} | Config].
 
 end_per_suite(Config) ->
+    [ ok = application:stop(A) || A <- lists:reverse(?config(apps, Config))],
     Config.
 
 test_text_frames(_) ->
@@ -90,16 +86,8 @@ test_control_frames(_) ->
     Short = short_msg(),
     ok = ws_client:sync_send_ping(Pid, Short),
     %% Send ping without message
-    %ok = ws_client:sync_send_ping(Pid, <<>>),
-    {pong, Short} = ws_client:recv(Pid),
-    %% Server will echo the ping as well
-    {ping, Short} = ws_client:recv(Pid),
-    %% to which we will reply automatically
-    %% resulting in further pong
     {pong, Short} = ws_client:recv(Pid),
     ok = ws_client:sync_send_ping(Pid, <<>>),
-    {pong, <<>>} = ws_client:recv(Pid),
-    {ping, <<>>} = ws_client:recv(Pid),
     {pong, <<>>} = ws_client:recv(Pid),
     ws_client:stop(Pid),
     ok.
@@ -139,6 +127,13 @@ test_bad_request(_) ->
     after 1000 ->
               ct:fail(timeout)
     end.
+
+test_keepalive_opt(_) ->
+    {ok, Pid} = ws_client:start_link("ws://localhost:8080", 100),
+    receive {ok, Pid} -> ok after 500 -> ct:fail(timeout) end,
+    {pong, <<"foo">>} = ws_client:recv(Pid, 500),
+    ws_client:stop(Pid),
+    ok.
 
 short_msg() ->
     <<"hello">>.
