@@ -117,6 +117,8 @@ start_link(URL, Handler, Args) ->
 %%  - {keepalive, integer()}:  keepalive timeout in ms
 %%  - {extra_headers, list({K, V})}: a kv-list of headers to send in the handshake
 %% (useful if you need to add an e.g. 'Origin' header on connection.
+%%  - {ssl_verify, verify_none | verify_peer | {verify_fun, _}} : this is passed
+%%  through to ssl:connect/2,3.
 start_link(URL, Handler, HandlerArgs, Opts) when is_list(Opts) ->
     case http_uri:parse(URL, [{scheme_defaults, [{ws,80},{wss,443}]}]) of
         {ok, {Protocol, _, Host, Port, Path, Query}} ->
@@ -147,7 +149,8 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
             {once, State} -> {true, false, State};
             {reconnect, State} -> {true, true, State}
         end,
-    Transport = transport(Protocol),
+    SSLVerify = proplists:get_value(ssl_verify, Opts, verify_none),
+    Transport = transport(Protocol, ssl_verify(SSLVerify)),
     WSReq = websocket_req:new(
                 Protocol, Host, Port, Path,
                 undefined, Transport,
@@ -171,8 +174,8 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
     Connect andalso gen_fsm:send_event(self(), connect),
     {ok, disconnected, Context0}.
 
--spec transport(ws | wss) -> #transport{}.
-transport(wss) ->
+-spec transport(ws | wss, {verify | verify_fun, term()}) -> #transport{}.
+transport(wss, SSLVerify) ->
     #transport{
        mod = ssl,
        name = ssl,
@@ -181,10 +184,10 @@ transport(wss) ->
        opts = [
                {mode, binary},
                {active, true},
-               {verify, verify_none},
+               SSLVerify,
                {packet, 0}
               ]};
-transport(ws) ->
+transport(ws, _) ->
     #transport{
         mod = gen_tcp,
         name = tcp,
@@ -195,6 +198,13 @@ transport(ws) ->
                 {active, true},
                 {packet, 0}
                ]}.
+
+ssl_verify(verify_none) ->
+    {verify, verify_none};
+ssl_verify(verify_peer) ->
+    {verify, verify_peer};
+ssl_verify({verify_fun, _}=Verify) ->
+    Verify.
 
 -spec terminate(Reason :: term(), state_name(), #context{}) -> ok.
 %% TODO Use Reason!!
