@@ -116,47 +116,54 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
             {once, State} -> {true, false, State};
             {reconnect, State} -> {true, true, State}
         end,
-    Transport =
-        case Protocol of
-            wss ->
-                #transport{
-                   mod = ssl,
-                   name = ssl,
-                   closed = ssl_closed,
-                   error = ssl_error,
-                   opts = [
-                           {mode, binary},
-                           {active, true},
-                           {verify, verify_none},
-                           {packet, 0}
-                          ]};
-            ws  ->
-                #transport{
-                    mod = gen_tcp,
-                    name = tcp,
-                    closed = tcp_closed,
-                    error = tcp_error,
-                    opts = [
-                            binary,
-                            {active, true},
-                            {packet, 0}
-                           ]}
-        end,
+    Transport = transport(Protocol),
     WSReq = websocket_req:new(
                 Protocol, Host, Port, Path,
                 undefined, Transport,
                 wsc_lib:generate_ws_key()
             ),
+    WSReq1 = case proplists:get_value(keepalive, Opts) of
+        undefined -> WSReq;
+        KeepAlive ->
+            % NB: there's no need to start the actual KA mechanism until we're
+            % actually connected.
+            websocket_req:keepalive(KeepAlive, WSReq)
+    end,
     Context0 = #context{
                   transport = Transport,
                   headers   = proplists:get_value(extra_headers, Opts, []),
-                  wsreq     = WSReq,
+                  wsreq     = WSReq1,
                   target    = {Protocol, Host, Port, Path},
                   handler   = {Handler, HState},
                   reconnect = Reconnect
                  },
     Connect andalso gen_fsm:send_event(self(), connect),
     {ok, disconnected, Context0}.
+
+-spec transport(ws | wss) -> #transport{}.
+transport(wss) ->
+    #transport{
+       mod = ssl,
+       name = ssl,
+       closed = ssl_closed,
+       error = ssl_error,
+       opts = [
+               {mode, binary},
+               {active, true},
+               {verify, verify_none},
+               {packet, 0}
+              ]};
+transport(ws) ->
+    #transport{
+        mod = gen_tcp,
+        name = tcp,
+        closed = tcp_closed,
+        error = tcp_error,
+        opts = [
+                binary,
+                {active, true},
+                {packet, 0}
+               ]}.
 
 -spec terminate(Reason :: term(), state_name(), #context{}) -> ok.
 %% TODO Use Reason!!
@@ -184,7 +191,15 @@ connect(#context{
         {ok, Socket} ->
             WSReq1 = websocket_req:socket(Socket, WSReq0),
             ok = send_handshake(WSReq1, Headers),
-            {next_state, handshaking, Context#context{ wsreq=WSReq1}};
+            case websocket_req:keepalive(WSReq1) of
+                infinity ->
+                    {next_state, handshaking, Context#context{ wsreq=WSReq1}};
+                KeepAlive ->
+                    NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
+                    WSReq2 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq1),
+                    {next_state, handshaking, Context#context{ wsreq=WSReq2}}
+            end
+            ;
         {error,_}=Error ->
             disconnect(Error, Context)
     end.
@@ -301,7 +316,11 @@ handle_info({Trans, Socket, Data},
         {ok, Remaining} ->
             {ok, HState2, KeepAlive} =
                 case Handler:onconnect(WSReq1, HState0) of
-                    {ok, HState1} -> {ok, HState1, infinity};
+                    {ok, HState1} ->
+                        case websocket_req:keepalive(WSReq1) of
+                            undefined -> {ok, HState1, infinity};
+                            KA -> {ok, HState1, KA}
+                        end;
                     {ok, _HS1, KA}=Result ->
                         erlang:send_after(KA, self(), keepalive),
                         Result
