@@ -76,6 +76,18 @@ consume_response(Status, Response, HeaderAcc) ->
             {ok, Status, HeaderAcc, Body}
     end.
 
+unpack_frame(<< Fin:1, RSV:3, OpCode:4, Mask:1, Len:7, Payload/bits >>)
+  when Len < 126 ->
+    {ok, Fin, RSV, OpCode, Len, unmask_frame(Mask, Len, Payload)};
+unpack_frame(<< Fin:1, RSV:3, OpCode:4, Mask:1, 126:7, Len:16, Payload/bits>>)
+  when Len > 125, OpCode < 8 ->
+    {ok, Fin, RSV, OpCode, Len, unmask_frame(Mask, Len, Payload)};
+unpack_frame(<< Fin:1, RSV:3, OpCode:4, Mask:1, 127:7, 0:1, Len:63, Payload/bits>>)
+  when Len > 16#ffff, OpCode < 8 ->
+    {ok, Fin, RSV, OpCode, Len, unmask_frame(Mask, Len, Payload)};
+unpack_frame(Data) ->
+    {incomplete, Data}.
+
 %% @doc Start or continue continuation payload with length less than 126 bytes
 decode_frame(WSReq, Frame) when is_binary(Frame) ->
     case unpack_frame(Frame) of
@@ -89,21 +101,10 @@ decode_frame(WSReq, Frame) when is_binary(Frame) ->
             decode_frame(WSReq1, OpCode, Len, Payload, <<>>)
     end.
 
-unpack_frame(<< Fin:1, RSV:3, OpCode:4, Mask:1, Len:7, Payload/bits >>)
-  when Len < 126 ->
-    {ok, Fin, RSV, OpCode, Len, unmask_frame(Mask, Payload)};
-unpack_frame(<< Fin:1, RSV:3, OpCode:4, Mask:1, 126:7, Len:16, Payload/bits>>)
-  when Len > 125, OpCode < 8 ->
-    {ok, Fin, RSV, OpCode, Len, unmask_frame(Mask, Payload)};
-unpack_frame(<< Fin:1, RSV:3, OpCode:4, Mask:1, 127:7, 0:1, Len:63, Payload/bits>>)
-  when Len > 16#ffff, OpCode < 8 ->
-    {ok, Fin, RSV, OpCode, Len, unmask_frame(Mask, Payload)};
-unpack_frame(Data) ->
-    {incomplete, Data}.
-
-unmask_frame(0, Payload) -> Payload;
-unmask_frame(1, << Mask:32, Payload/bits >>) ->
-    mask_payload(Mask, Payload, <<>>).
+unmask_frame(0, _, Payload) -> Payload;
+unmask_frame(1, Len, << Mask:32, Rest/bits >>) ->
+    << Payload:Len/binary, NextFrame/bits >> = Rest,
+    << (mask_payload(Mask, Payload))/bits, NextFrame/binary >>.
 
 -spec decode_frame(websocket_req:req(),
                Opcode :: websocket_req:opcode(),
@@ -177,7 +178,7 @@ encode_frame(Type) when is_atom(Type) ->
 
 %% @doc The payload is masked using a masking key byte by byte.
 %% Can do it in 4 byte chunks to save time until there is left than 4 bytes left
-mask_payload(MaskingKey, Payload) ->
+mask_payload(MaskingKey, Payload) when is_integer(MaskingKey), is_binary(Payload) ->
     mask_payload(MaskingKey, Payload, <<>>).
 mask_payload(_, <<>>, Acc) ->
     Acc;

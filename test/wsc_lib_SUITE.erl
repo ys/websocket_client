@@ -11,20 +11,12 @@
 all() ->
     [
      t_prop_single_frame_codec,
-     t_prop_mask
-     %{group, codec}
+     t_prop_mask,
+     t_prop_batched_binaries
     ].
 
 suite() ->
     [{ct_hooks,[cth_surefire]}, {timetrap, {seconds, 30}}].
-
-groups() ->
-    [
-     {codec, [],
-      [
-       t_prop_single_frame_codec
-      ]}
-    ].
 
 init_per_suite(Config) ->
     {Protocol, Host, Port, Path} = {tcp, "localhost", 8080, "/"},
@@ -71,6 +63,39 @@ prop_single_frame_codec() ->
                     _ -> false
                 end
             end).
+
+t_prop_batched_binaries(_) ->
+    proper:quickcheck(prop_batched_binaries()) orelse
+        ct:fail(proper:counterexample()).
+prop_batched_binaries() ->
+    WSReq = wsreq(),
+    ?FORALL(Messages, non_empty(list({oneof([text, binary, ping, pong]), binary()})),
+            begin
+                Encoded = [wsc_lib:encode_frame(Msg) || Msg <- Messages],
+                Batch = list_to_binary(Encoded),
+                {frames, Decoded, _WSReq1} = maybe_frames(WSReq, Batch, []),
+                Messages == Decoded
+            end).
+
+maybe_frames(WSReq0, Payload, Frames) ->
+    % {recv, websocket_req:req(), IncompleteFrame :: binary()}
+    % | {frame, {OpcodeName :: atom(), Payload :: binary()},
+    %                websocket_req:req(), Rest :: binary()}
+    % | {close, Reason :: term(), websocket_req:req()}.
+    case wsc_lib:decode_frame(WSReq0, Payload) of
+        {close, Reason, WSReq1} ->
+            % Anything that might be left is discarded
+            % But anything received before is processed
+            {frames, lists:reverse([{close, Reason} | Frames]), WSReq1};
+        {recv, WSReq1, Incomplete} ->
+            {frames, lists:reverse([{recv, Incomplete} | Frames]), WSReq1};
+        {frame, Frame, WSReq1, <<>>} ->
+            {frames, lists:reverse([Frame|Frames]), WSReq1};
+        {frame, Frame, WSReq1, Buffer} ->
+            maybe_frames(WSReq1, Buffer, [Frame | Frames])
+    end.
+
+
 
 wsreq() ->
     {Protocol, Host, Port, Path} = {tcp, "localhost", 8080, "/"},
