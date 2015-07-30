@@ -6,6 +6,8 @@
          start_link/0,
          start_link/1,
          start_link/2,
+         socket/1,
+         socket/2,
          send_text/2,
          send_binary/2,
          send_ping/2,
@@ -42,6 +44,16 @@ start_link(Url, KeepAlive) ->
 
 stop(Pid) ->
     Pid ! stop.
+
+socket(Pid) ->
+    socket(Pid, 5000).
+socket(Pid, Timeout) ->
+    Pid ! {gimme_socket, self()},
+    receive
+        {hav_socket, Pid, Sock} -> {ok, Sock}
+    after Timeout ->
+              {error, timeout}
+    end.
 
 send_text(Pid, Msg) ->
     websocket_client:cast(Pid, {text, Msg}).
@@ -96,6 +108,10 @@ websocket_info({recv, From}, _, State = #state{buffer = [Top|Rest]}) ->
     ct:pal("Sending buffer hd to: ~p {Buffer: ~p}~n", [From, [Top|Rest]]),
     From ! Top,
     {ok, State#state{buffer = Rest}};
+websocket_info({gimme_socket, Whom}, WSReq, State) ->
+    Sock = websocket_req:socket(WSReq),
+    Whom ! {hav_socket, self(), Sock},
+    {ok, State};
 websocket_info(stop, _, State) ->
     {close, <<>>, State}.
 

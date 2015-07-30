@@ -10,7 +10,7 @@
 
 all() ->
     [
-     t_prop_codec,
+     t_prop_single_frame_codec,
      t_prop_mask
      %{group, codec}
     ].
@@ -22,7 +22,7 @@ groups() ->
     [
      {codec, [],
       [
-       t_prop_codec
+       t_prop_single_frame_codec
       ]}
     ].
 
@@ -58,10 +58,21 @@ prop_mask() ->
                 Payload =:= wsc_lib:mask_payload(Mask, wsc_lib:mask_payload(Mask, Payload))
             end).
 
-t_prop_codec(_) ->
-    proper:quickcheck(prop_codec()) orelse
+t_prop_single_frame_codec(_) ->
+    proper:quickcheck(prop_single_frame_codec()) orelse
         ct:fail(proper:counterexample()).
-prop_codec() ->
+prop_single_frame_codec() ->
+    WSReq = wsreq(),
+    ?FORALL({Type, Payload}, {oneof([text, binary, ping, pong]), binary()},
+            begin
+                Encoded = wsc_lib:encode_frame({Type, Payload}),
+                case wsc_lib:decode_frame(WSReq, Encoded) of 
+                    {frame, {Type, Payload}, #websocket_req{}, <<>>} -> true;
+                    _ -> false
+                end
+            end).
+
+wsreq() ->
     {Protocol, Host, Port, Path} = {tcp, "localhost", 8080, "/"},
     Transport = #transport{
                    mod = gen_tcp,
@@ -73,16 +84,6 @@ prop_codec() ->
                            {active, true},
                            {packet, 0}
                           ]},
-    WSReq = websocket_req:new(
-                Protocol, Host, Port, Path,
-                undefined, Transport,
-                wsc_lib:generate_ws_key()
-            ),
-    ?FORALL({Type, Payload}, {oneof([text, binary, ping, pong]), binary()},
-            begin
-                Encoded = wsc_lib:encode_frame({Type, Payload}),
-                case wsc_lib:decode_frame(WSReq, Encoded) of 
-                    {frame, {Type, Payload}, #websocket_req{}, <<>>} -> true;
-                    _ -> false
-                end
-            end).
+    websocket_req:new(
+      Protocol, Host, Port, Path,
+      undefined, Transport, wsc_lib:generate_ws_key()).
