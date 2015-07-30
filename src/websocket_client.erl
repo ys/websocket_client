@@ -46,7 +46,7 @@
 -callback onconnect(websocket_req:req(), state()) ->
     % Simple client: only server-initiated pings will be
     % automatically responded to.
-    {ok, state()} 
+    {ok, state()}
     % Keepalive client: will automatically initiate a ping to the server
     % every keepalive() ms.
     | {ok, state(), keepalive()}
@@ -340,7 +340,7 @@ handle_info({TransError, _Socket, Reason},
               }=Context) ->
     ok = websocket_close(WSReq, Handler, HState0, {TransError, Reason}),
     {stop, {socket_error, Reason}, Context};
-handle_info({Trans, Socket, Data},
+handle_info({Trans, _Socket, Data},
             handshaking,
             #context{
                transport=#transport{ name=Trans },
@@ -367,28 +367,62 @@ handle_info({Trans, Socket, Data},
                         Result
                 end,
             WSReq2 = websocket_req:keepalive(KeepAlive, WSReq1),
-            %% TODO This is nasty and hopefully there's a nicer way
-            case Remaining of
-                <<>> -> ok;
-                _ -> self() ! {Trans, Socket, Remaining}
-            end,
-            {next_state, connected, Context#context{
-                                      wsreq=WSReq2,
-                                      handler={Handler, HState2},
-                                      buffer = <<>>}}
+            handle_websocket_frame(Remaining, Context#context{
+                                                wsreq=WSReq2,
+                                                handler={Handler, HState2},
+                                                buffer= <<>>})
     end;
 handle_info({Trans, _Socket, Data},
             connected,
             #context{
-               transport=#transport{ name=Trans },
-               handler={Handler, HState0},
+               transport=#transport{ name=Trans }
+              }=Context) ->
+    handle_websocket_frame(Data, Context);
+handle_info(Msg, State,
+            #context{
                wsreq=WSReq,
+               handler={Handler, HState0},
                buffer=Buffer
               }=Context) ->
+    try Handler:websocket_info(Msg, WSReq, HState0) of
+        HandlerResponse ->
+            case handle_response(HandlerResponse, Handler, WSReq) of
+                {ok, WSReqN, HStateN} ->
+                    {next_state, State, Context#context{
+                                          handler={Handler, HStateN},
+                                          wsreq=WSReqN,
+                                          buffer=Buffer}};
+                {close, Reason, WSReqN, Handler, HStateN} ->
+                    {stop, Reason, Context#context{
+                                     wsreq=WSReqN,
+                                     handler={Handler, HStateN}}}
+            end
+    catch Class:Reason ->
+        %% TODO Maybe a function_clause catch here to allow
+        %% not having to have a catch-all clause in websocket_info CB?
+        error_logger:error_msg(
+          "** Websocket client ~p terminating in ~p/~p~n"
+          "   for the reason ~p:~p~n"
+          "** Last message was ~p~n"
+          "** Handler state was ~p~n"
+          "** Stacktrace: ~p~n~n",
+          [Handler, websocket_info, 3, Class, Reason, Msg, HState0,
+           erlang:get_stacktrace()]),
+        websocket_close(WSReq, Handler, HState0, Reason),
+        {stop, Reason, Context}
+    end.
+
+% Recursively handle all frames that are in the buffer;
+% If the last frame is incomplete, leave it in the buffer and wait for more.
+handle_websocket_frame(Data, #context{}=Context) ->
+    #context{
+               handler={Handler, HState0},
+               wsreq=WSReq,
+               buffer=Buffer} = Context,
     Result =
         case websocket_req:remaining(WSReq) of
             undefined ->
-                wsc_lib:decode_frame(WSReq, << Buffer/binary, Data/binary >>);
+                wsc_lib:decode_frame(WSReq, << Buffer/binary, Data/binary >>); %% TODO ??
             Remaining ->
                 wsc_lib:decode_frame(WSReq, websocket_req:opcode(WSReq), Remaining, Data, Buffer)
         end,
@@ -401,16 +435,18 @@ handle_info({Trans, _Socket, Data},
             try
                 HandlerResponse = Handler:websocket_handle(Message, WSReqN, HState0),
                 WSReqN2 = websocket_req:remaining(undefined, WSReqN),
-                case handle_response(HandlerResponse, Handler, BufferN, WSReqN2) of
-                    {ok, WSReqN2, HStateN2, BufferN2} ->
-                        case BufferN2 of
-                            <<>> -> ok;
-                            _ -> self() ! {Trans, _Socket, BufferN2}
-                        end,
-                        {next_state, connected, Context#context{
-                                                  handler={Handler, HStateN2},
-                                                  wsreq=WSReqN2,
-                                                  buffer= <<>>}};
+                case handle_response(HandlerResponse, Handler, WSReqN2) of
+                    {ok, WSReqN2, HStateN2} ->
+                        Context2 = Context#context{
+                                     handler = {Handler, HStateN2},
+                                     wsreq = WSReqN2,
+                                     buffer = <<>>},
+                        case BufferN of
+                            <<>> ->
+                                {next_state, connected, Context2};
+                            _ ->
+                                handle_websocket_frame(BufferN, Context2)
+                        end;
                     {close, Error, WSReqN2, Handler, HStateN2} ->
                         {stop, Error, Context#context{
                                          wsreq=WSReqN2,
@@ -435,40 +471,8 @@ handle_info({Trans, _Socket, Data},
         {close, _Reason, WSReqN} ->
             {next_state, disconnected, Context#context{wsreq=WSReqN,
                                                        buffer= <<>>}}
-    end;
-handle_info(Msg, State,
-            #context{
-               wsreq=WSReq,
-               handler={Handler, HState0},
-               buffer=Buffer
-              }=Context) ->
-    try Handler:websocket_info(Msg, WSReq, HState0) of
-        HandlerResponse ->
-            case handle_response(HandlerResponse, Handler, Buffer, WSReq) of
-                {ok, WSReqN, HStateN, BufferN} ->
-                    {next_state, State, Context#context{
-                                          handler={Handler, HStateN},
-                                          wsreq=WSReqN,
-                                          buffer=BufferN}};
-                {close, Reason, WSReqN, Handler, HStateN} ->
-                    {stop, Reason, Context#context{
-                                     wsreq=WSReqN,
-                                     handler={Handler, HStateN}}}
-            end
-    catch Class:Reason ->
-        %% TODO Maybe a function_clause catch here to allow
-        %% not having to have a catch-all clause in websocket_info CB?
-        error_logger:error_msg(
-          "** Websocket client ~p terminating in ~p/~p~n"
-          "   for the reason ~p:~p~n"
-          "** Last message was ~p~n"
-          "** Handler state was ~p~n"
-          "** Stacktrace: ~p~n~n",
-          [Handler, websocket_info, 3, Class, Reason, Msg, HState0,
-           erlang:get_stacktrace()]),
-        websocket_close(WSReq, Handler, HState0, Reason),
-        {stop, Reason, Context}
     end.
+
 
 -spec code_change(OldVsn :: term(), state_name(), #context{}, Extra :: any()) ->
     {ok, state_name(), #context{}}.
@@ -476,14 +480,14 @@ code_change(_OldVsn, StateName, Context, _Extra) ->
     {ok, StateName, Context}.
 
 %% @doc Handles return values from the callback module
-handle_response({ok, HandlerState}, _Handler, Buffer, WSReq) ->
-    {ok, WSReq, HandlerState, Buffer};
-handle_response({reply, Frame, HandlerState}, Handler, Buffer, WSReq) ->
+handle_response({ok, HandlerState}, _Handler, WSReq) ->
+    {ok, WSReq, HandlerState};
+handle_response({reply, Frame, HandlerState}, Handler, WSReq) ->
     case encode_and_send(Frame, WSReq) of
-        ok -> {ok, WSReq, HandlerState, Buffer};
+        ok -> {ok, WSReq, HandlerState};
         Reason -> {close, Reason, WSReq, Handler, HandlerState}
     end;
-handle_response({close, Payload, HandlerState}, Handler, _, WSReq) ->
+handle_response({close, Payload, HandlerState}, Handler, WSReq) ->
     encode_and_send({close, Payload}, WSReq),
     {close, normal, WSReq, Handler, HandlerState}.
 

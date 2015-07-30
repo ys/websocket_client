@@ -4,6 +4,7 @@
 %% Purely functional aspects of websocket client comms.
 %%
 %% Herein live all the functions for pure data processing.
+-compile([export_all]).
 -include("websocket_req.hrl").
 
 -export([create_auth_header/3]).
@@ -75,43 +76,35 @@ consume_response(Status, Response, HeaderAcc) ->
             {ok, Status, HeaderAcc, Body}
     end.
 
-%% @doc Start or continue continuation payload with length less than 126 bytes
-decode_frame(WSReq, << 0:4, Opcode:4, 0:1, Len:7, Rest/bits >>)
+unpack_frame(<< Fin:1, RSV:3, OpCode:4, Mask:1, Len:7, Payload/bits >>)
   when Len < 126 ->
-    WSReq1 = set_continuation_if_empty(WSReq, Opcode),
-    WSReq2 = websocket_req:fin(0, WSReq1),
-    decode_frame(WSReq2, Opcode, Len, Rest, <<>>);
-%% @doc Start or continue continuation payload with length a 2 byte int
-decode_frame(WSReq, << 0:4, Opcode:4, 0:1, 126:7, Len:16, Rest/bits >>)
-  when Len > 125, Opcode < 8 ->
-    WSReq1 = set_continuation_if_empty(WSReq, Opcode),
-    WSReq2 = websocket_req:fin(0, WSReq1),
-    decode_frame(WSReq2, Opcode, Len, Rest, <<>>);
-%% @doc Start or continue continuation payload with length a 64 bit int
-decode_frame(WSReq, << 0:4, Opcode:4, 0:1, 127:7, 0:1, Len:63, Rest/bits >>)
-  when Len > 16#ffff, Opcode < 8 ->
-    WSReq1 = set_continuation_if_empty(WSReq, Opcode),
-    WSReq2 = websocket_req:fin(0, WSReq1),
-    decode_frame(WSReq2, Opcode, Len, Rest, <<>>);
-%% @doc Length is less 126 bytes
-decode_frame(WSReq, << 1:1, 0:3, Opcode:4, 0:1, Len:7, Rest/bits >>)
-  when Len < 126 ->
-    WSReq1 = websocket_req:fin(1, WSReq),
-    decode_frame(WSReq1, Opcode, Len, Rest, <<>>);
-%% @doc Length is a 2 byte integer
-decode_frame(WSReq, << 1:1, 0:3, Opcode:4, 0:1, 126:7, Len:16, Rest/bits >>)
-  when Len > 125, Opcode < 8 ->
-    WSReq1 = websocket_req:fin(1, WSReq),
-    decode_frame(WSReq1, Opcode, Len, Rest, <<>>);
-%% @doc Length is a 64 bit integer
-decode_frame(WSReq, << 1:1, 0:3, Opcode:4, 0:1, 127:7, 0:1, Len:63, Rest/bits >>)
-  when Len > 16#ffff, Opcode < 8 ->
-    WSReq1 = websocket_req:fin(1, WSReq),
-    decode_frame(WSReq1, Opcode, Len, Rest, <<>>);
-%% @doc Need more data to read length properly
-decode_frame(WSReq, Data) ->
-    {recv, WSReq, Data}.
+    {ok, Fin, RSV, OpCode, Len, unmask_frame(Mask, Len, Payload)};
+unpack_frame(<< Fin:1, RSV:3, OpCode:4, Mask:1, 126:7, Len:16, Payload/bits>>)
+  when Len > 125, OpCode < 8 ->
+    {ok, Fin, RSV, OpCode, Len, unmask_frame(Mask, Len, Payload)};
+unpack_frame(<< Fin:1, RSV:3, OpCode:4, Mask:1, 127:7, 0:1, Len:63, Payload/bits>>)
+  when Len > 16#ffff, OpCode < 8 ->
+    {ok, Fin, RSV, OpCode, Len, unmask_frame(Mask, Len, Payload)};
+unpack_frame(Data) ->
+    {incomplete, Data}.
 
+%% @doc Start or continue continuation payload with length less than 126 bytes
+decode_frame(WSReq, Frame) when is_binary(Frame) ->
+    case unpack_frame(Frame) of
+        {incomplete, Data} -> {recv, WSReq, Data};
+        {ok, 0, 0, OpCode, Len, Payload} ->
+            WSReq1 = set_continuation_if_empty(WSReq, OpCode),
+            WSReq2 = websocket_req:fin(0, WSReq1),
+            decode_frame(WSReq2, OpCode, Len, Payload, <<>>);
+        {ok, 1, 0, OpCode, Len, Payload} ->
+            WSReq1 = websocket_req:fin(1, WSReq),
+            decode_frame(WSReq1, OpCode, Len, Payload, <<>>)
+    end.
+
+unmask_frame(0, _, Payload) -> Payload;
+unmask_frame(1, Len, << Mask:32, Rest/bits >>) ->
+    << Payload:Len/binary, NextFrame/bits >> = Rest,
+    << (mask_payload(Mask, Payload))/bits, NextFrame/binary >>.
 
 -spec decode_frame(websocket_req:req(),
                Opcode :: websocket_req:opcode(),
@@ -185,7 +178,7 @@ encode_frame(Type) when is_atom(Type) ->
 
 %% @doc The payload is masked using a masking key byte by byte.
 %% Can do it in 4 byte chunks to save time until there is left than 4 bytes left
-mask_payload(MaskingKey, Payload) ->
+mask_payload(MaskingKey, Payload) when is_integer(MaskingKey), is_binary(Payload) ->
     mask_payload(MaskingKey, Payload, <<>>).
 mask_payload(_, <<>>, Acc) ->
     Acc;
