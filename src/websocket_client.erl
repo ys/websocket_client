@@ -401,11 +401,12 @@ handle_info({Trans, _Socket, Data},
             try
                 HandlerResponse = Handler:websocket_handle(Message, WSReqN, HState0),
                 WSReqN2 = websocket_req:remaining(undefined, WSReqN),
-                case handle_response(HandlerResponse, Handler, BufferN, WSReqN2) of
-                    {ok, WSReqN2, HStateN2, BufferN2} ->
-                        case BufferN2 of
+                case handle_response(HandlerResponse, Handler, WSReqN2) of
+                    {ok, WSReqN2, HStateN2} ->
+                        %% TODO Recurse here with BufferN2, back out to wsc_lib:decode_frame/2,5
+                        case BufferN of
                             <<>> -> ok;
-                            _ -> self() ! {Trans, _Socket, BufferN2}
+                            _ -> self() ! {Trans, _Socket, BufferN}
                         end,
                         {next_state, connected, Context#context{
                                                   handler={Handler, HStateN2},
@@ -444,12 +445,12 @@ handle_info(Msg, State,
               }=Context) ->
     try Handler:websocket_info(Msg, WSReq, HState0) of
         HandlerResponse ->
-            case handle_response(HandlerResponse, Handler, Buffer, WSReq) of
-                {ok, WSReqN, HStateN, BufferN} ->
+            case handle_response(HandlerResponse, Handler, WSReq) of
+                {ok, WSReqN, HStateN} ->
                     {next_state, State, Context#context{
                                           handler={Handler, HStateN},
                                           wsreq=WSReqN,
-                                          buffer=BufferN}};
+                                          buffer=Buffer}};
                 {close, Reason, WSReqN, Handler, HStateN} ->
                     {stop, Reason, Context#context{
                                      wsreq=WSReqN,
@@ -470,20 +471,23 @@ handle_info(Msg, State,
         {stop, Reason, Context}
     end.
 
+
+
+
 -spec code_change(OldVsn :: term(), state_name(), #context{}, Extra :: any()) ->
     {ok, state_name(), #context{}}.
 code_change(_OldVsn, StateName, Context, _Extra) ->
     {ok, StateName, Context}.
 
 %% @doc Handles return values from the callback module
-handle_response({ok, HandlerState}, _Handler, Buffer, WSReq) ->
-    {ok, WSReq, HandlerState, Buffer};
-handle_response({reply, Frame, HandlerState}, Handler, Buffer, WSReq) ->
+handle_response({ok, HandlerState}, _Handler, WSReq) ->
+    {ok, WSReq, HandlerState};
+handle_response({reply, Frame, HandlerState}, Handler, WSReq) ->
     case encode_and_send(Frame, WSReq) of
-        ok -> {ok, WSReq, HandlerState, Buffer};
+        ok -> {ok, WSReq, HandlerState};
         Reason -> {close, Reason, WSReq, Handler, HandlerState}
     end;
-handle_response({close, Payload, HandlerState}, Handler, _, WSReq) ->
+handle_response({close, Payload, HandlerState}, Handler, WSReq) ->
     encode_and_send({close, Payload}, WSReq),
     {close, normal, WSReq, Handler, HandlerState}.
 
