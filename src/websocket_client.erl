@@ -502,8 +502,12 @@ send_handshake(WSReq, ExtraHeaders) ->
 
 %% @doc Send frame to server
 encode_and_send(Frame, WSReq) ->
-    [Socket, Transport] = websocket_req:get([socket, transport], WSReq),
-    (Transport#transport.mod):send(Socket, wsc_lib:encode_frame(Frame)).
+    case websocket_req:get([socket, transport], WSReq) of
+        [undefined, _Transport] ->
+            {error, disconnected};
+        [Socket, Transport] ->
+            (Transport#transport.mod):send(Socket, wsc_lib:encode_frame(Frame))
+    end.
 
 -spec websocket_close(WSReq :: websocket_req:req(),
                       Handler :: module(),
