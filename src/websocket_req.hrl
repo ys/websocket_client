@@ -14,6 +14,7 @@
           path                            :: string(),
           keepalive = infinity            :: infinity | integer(),
           keepalive_timer = undefined     :: undefined | reference(),
+          keepalive_max_attempts = 1      :: non_neg_integer(), % Set to -1 to disable
           socket                          :: inet:socket() | ssl:sslsocket(),
           transport                       :: #transport{},
           key                             :: binary(),

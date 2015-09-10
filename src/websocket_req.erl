@@ -9,6 +9,7 @@
          port/2, port/1,
          path/2, path/1,
          keepalive/2, keepalive/1,
+         keepalive_max_attempts/2, keepalive_max_attempts/1,
          socket/2, socket/1,
          transport/2, transport/1,
          key/2, key/1,
@@ -93,15 +94,21 @@ path(P, Req) ->
     Req#websocket_req{path = P}.
 
 
--spec keepalive(req()) -> integer().
+-spec keepalive(req()) -> infinity | integer().
 keepalive(#websocket_req{keepalive = K}) -> K.
 
 -spec keepalive(integer(), req()) -> req().
 keepalive(K, Req) ->
     Req#websocket_req{keepalive = K}.
 
+-spec keepalive_max_attempts(req()) -> non_neg_integer().
+keepalive_max_attempts(#websocket_req{keepalive_max_attempts = K}) -> K.
 
--spec socket(req()) -> inet:socket() | ssl:sslsocket().
+-spec keepalive_max_attempts(non_neg_integer(), req()) -> req().
+keepalive_max_attempts(K, Req) ->
+    Req#websocket_req{keepalive_max_attempts = K}.
+
+-spec socket(req()) -> undefined | inet:socket() | ssl:sslsocket().
 socket(#websocket_req{socket = S}) -> S.
 
 -spec socket(inet:socket() | ssl:sslsocket(), req()) -> req().
@@ -173,6 +180,7 @@ g(port, #websocket_req{port = Ret}) -> Ret;
 g(path, #websocket_req{path = Ret}) -> Ret;
 g(keepalive, #websocket_req{keepalive = Ret}) -> Ret;
 g(keepalive_timer, #websocket_req{keepalive_timer = Ret}) -> Ret;
+g(keepalive_max_attempts, #websocket_req{keepalive_max_attempts = Ret}) -> Ret;
 g(socket, #websocket_req{socket = Ret}) -> Ret;
 g(transport, #websocket_req{transport = Ret}) -> Ret;
 g(key, #websocket_req{key = Ret}) -> Ret;
@@ -190,6 +198,7 @@ set([{port, Val} | Tail], Req) -> set(Tail, Req#websocket_req{port = Val});
 set([{path, Val} | Tail], Req) -> set(Tail, Req#websocket_req{path = Val});
 set([{keepalive, Val} | Tail], Req) -> set(Tail, Req#websocket_req{keepalive = Val});
 set([{keepalive_timer, Val} | Tail], Req) -> set(Tail, Req#websocket_req{keepalive_timer = Val});
+set([{keepalive_max_attempts, Val} | Tail], Req) -> set(Tail, Req#websocket_req{keepalive_max_attempts = Val});
 set([{socket, Val} | Tail], Req) -> set(Tail, Req#websocket_req{socket = Val});
 set([{transport, Val} | Tail], Req) -> set(Tail, Req#websocket_req{transport = Val});
 set([{key, Val} | Tail], Req) -> set(Tail, Req#websocket_req{key = Val});
