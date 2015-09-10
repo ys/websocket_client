@@ -1,5 +1,4 @@
-ebin/*
-deps/*
+_build
 *.beam
 .eunit/*
 erl_crash.dump
