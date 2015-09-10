@@ -2,7 +2,7 @@
         {
          mod :: gen_tcp | ssl, %% Which module to use for transport
          name :: tcp | ssl,
-         closed :: tcp_error | ssl_error, %% These are used to pattern match
+         closed :: tcp_closed | ssl_closed, %% These are used to pattern match
          error :: tcp_error | ssl_error,  %% exact tuples in active mode
          opts :: list(term()) %% TODO I think there's a inets? type for this
         }).
