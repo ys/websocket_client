@@ -150,7 +150,8 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
             {reconnect, State} -> {true, true, State}
         end,
     SSLVerify = proplists:get_value(ssl_verify, Opts, verify_none),
-    Transport = transport(Protocol, ssl_verify(SSLVerify)),
+    SockOpts  = proplists:get_value(socket_opts, Opts, []),
+    Transport = transport(Protocol, ssl_verify(SSLVerify), SockOpts),
     WSReq = websocket_req:new(
                 Protocol, Host, Port, Path,
                 undefined, Transport,
@@ -174,8 +175,9 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
     Connect andalso gen_fsm:send_event(self(), connect),
     {ok, disconnected, Context0}.
 
--spec transport(ws | wss, {verify | verify_fun, term()}) -> #transport{}.
-transport(wss, SSLVerify) ->
+-spec transport(ws | wss, {verify | verify_fun, term()},
+                list(inet:option())) -> #transport{}.
+transport(wss, SSLVerify, ExtraOpts) ->
     #transport{
        mod = ssl,
        name = ssl,
@@ -186,17 +188,19 @@ transport(wss, SSLVerify) ->
                {active, true},
                SSLVerify,
                {packet, 0}
+               | ExtraOpts
               ]};
-transport(ws, _) ->
+transport(ws, _, ExtraOpts) ->
     #transport{
         mod = gen_tcp,
         name = tcp,
         closed = tcp_closed,
         error = tcp_error,
         opts = [
-                binary,
+                {mode, binary},
                 {active, true},
                 {packet, 0}
+                | ExtraOpts
                ]}.
 
 ssl_verify(verify_none) ->
