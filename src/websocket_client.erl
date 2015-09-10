@@ -98,7 +98,8 @@
                       Path :: string()},
          handler   :: {module(), HState :: term()},
          buffer = <<>> :: binary(),
-         reconnect :: boolean()
+         reconnect :: boolean(),
+         pings_sent = 0 :: non_neg_integer()
         }).
 
 %% @doc Start the websocket client
@@ -230,7 +231,8 @@ connect(#context{
            transport=T,
            wsreq=WSReq0,
            headers=Headers,
-           target={_Protocol, Host, Port, _Path}
+           target={_Protocol, Host, Port, _Path},
+           pings_sent=Ps
           }=Context) ->
     case (T#transport.mod):connect(Host, Port, T#transport.opts, 6000) of
         {ok, Socket} ->
@@ -243,7 +245,7 @@ connect(#context{
                         KeepAlive ->
                             NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
                             WSReq2 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq1),
-                            {next_state, handshaking, Context#context{ wsreq=WSReq2}}
+                            {next_state, handshaking, Context#context{ wsreq=WSReq2, pings_sent=(Ps+1)}}
                     end;
                 Error ->
                     disconnect(Error, Context)
@@ -319,7 +321,7 @@ handle_sync_event(Event, {_From, Tag}, State, Context) ->
 -spec handle_info(Info :: term(), state_name(), #context{}) ->
     {next_state, state_name(), #context{}}
     | {stop, Reason :: term(), #context{}}.
-handle_info(keepalive, KAState, #context{ wsreq=WSReq }=Context)
+handle_info(keepalive, KAState, #context{ wsreq=WSReq, pings_sent=P }=Context)
   when KAState =:= handshaking; KAState =:= connected ->
     [KeepAlive, KATimer] =
         websocket_req:get([keepalive, keepalive_timer], WSReq),
@@ -330,7 +332,9 @@ handle_info(keepalive, KAState, #context{ wsreq=WSReq }=Context)
     ok = encode_and_send({ping, <<"foo">>}, WSReq),
     NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
     WSReq1 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq),
-    {next_state, KAState, Context#context{wsreq=WSReq1}};
+    %% TODO Check the ping count against the current threshold and alert the handler
+    %% somehow if we're breaching
+    {next_state, KAState, Context#context{wsreq=WSReq1, pings_sent=(P+1)}};
 %% TODO Move Socket into #transport{} from #websocket_req{} so that we can
 %% match on it here
 handle_info({TransClosed, _Socket}, _CurrState,
@@ -421,7 +425,8 @@ handle_info(Msg, State,
 
 % Recursively handle all frames that are in the buffer;
 % If the last frame is incomplete, leave it in the buffer and wait for more.
-handle_websocket_frame(Data, #context{}=Context) ->
+handle_websocket_frame(Data, #context{}=Context0) ->
+    Context = Context0#context{pings_sent=0},
     #context{
                handler={Handler, HState0},
                wsreq=WSReq,
