@@ -235,16 +235,19 @@ connect(#context{
     case (T#transport.mod):connect(Host, Port, T#transport.opts, 6000) of
         {ok, Socket} ->
             WSReq1 = websocket_req:socket(Socket, WSReq0),
-            ok = send_handshake(WSReq1, Headers),
-            case websocket_req:keepalive(WSReq1) of
-                infinity ->
-                    {next_state, handshaking, Context#context{ wsreq=WSReq1}};
-                KeepAlive ->
-                    NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
-                    WSReq2 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq1),
-                    {next_state, handshaking, Context#context{ wsreq=WSReq2}}
-            end
-            ;
+            case send_handshake(WSReq1, Headers) of
+                ok ->
+                    case websocket_req:keepalive(WSReq1) of
+                        infinity ->
+                            {next_state, handshaking, Context#context{ wsreq=WSReq1}};
+                        KeepAlive ->
+                            NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
+                            WSReq2 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq1),
+                            {next_state, handshaking, Context#context{ wsreq=WSReq2}}
+                    end;
+                Error ->
+                    disconnect(Error, Context)
+            end;
         {error,_}=Error ->
             disconnect(Error, Context)
     end.
