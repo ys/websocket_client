@@ -98,7 +98,8 @@
                       Path :: string()},
          handler   :: {module(), HState :: term()},
          buffer = <<>> :: binary(),
-         reconnect :: boolean()
+         reconnect :: boolean(),
+         ka_attempts = 0 :: non_neg_integer()
         }).
 
 %% @doc Start the websocket client
@@ -139,9 +140,8 @@ cast(Client, Frame) ->
     gen_fsm:send_event(Client, {cast, Frame}).
 
 -spec init(list(any())) ->
-    {ok, state_name(), #context{}}
+    {ok, state_name(), #context{}}.
     %% NB DO NOT try to use Timeout to do keepalive.
-    | {stop, Reason :: term()}.
 init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
     {Connect, Reconnect, HState} =
         case Handler:init(HandlerArgs) of
@@ -230,7 +230,8 @@ connect(#context{
            transport=T,
            wsreq=WSReq0,
            headers=Headers,
-           target={_Protocol, Host, Port, _Path}
+           target={_Protocol, Host, Port, _Path},
+           ka_attempts=KAs
           }=Context) ->
     case (T#transport.mod):connect(Host, Port, T#transport.opts, 6000) of
         {ok, Socket} ->
@@ -243,7 +244,7 @@ connect(#context{
                         KeepAlive ->
                             NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
                             WSReq2 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq1),
-                            {next_state, handshaking, Context#context{ wsreq=WSReq2}}
+                            {next_state, handshaking, Context#context{ wsreq=WSReq2, ka_attempts=(KAs+1)}}
                     end;
                 Error ->
                     disconnect(Error, Context)
@@ -308,7 +309,7 @@ handshaking(_Event, _From, Context) ->
 handle_event(_Event, State, Context) ->
     {next_state, State, Context}. %% i.e. ignore, do nothing
 
--spec handle_sync_event(Event :: term(), From :: pid(), state_name(), #context{}) ->
+-spec handle_sync_event(Event :: term(), {From :: pid(), any()}, state_name(), #context{}) ->
     {next_state, state_name(), #context{}}
     | {reply, Reply :: term(), state_name(), #context{}}
     | {stop, Reason :: term(), #context{}}
@@ -319,18 +320,23 @@ handle_sync_event(Event, {_From, Tag}, State, Context) ->
 -spec handle_info(Info :: term(), state_name(), #context{}) ->
     {next_state, state_name(), #context{}}
     | {stop, Reason :: term(), #context{}}.
-handle_info(keepalive, KAState, #context{ wsreq=WSReq }=Context)
+handle_info(keepalive, KAState, #context{ wsreq=WSReq, ka_attempts=KAAttempts }=Context)
   when KAState =:= handshaking; KAState =:= connected ->
-    [KeepAlive, KATimer] =
-        websocket_req:get([keepalive, keepalive_timer], WSReq),
+    [KeepAlive, KATimer, KAMax] =
+        websocket_req:get([keepalive, keepalive_timer, keepalive_max_attempts], WSReq),
     case KATimer of
         undefined -> ok;
         _ -> erlang:cancel_timer(KATimer)
     end,
-    ok = encode_and_send({ping, <<"foo">>}, WSReq),
-    NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
-    WSReq1 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq),
-    {next_state, KAState, Context#context{wsreq=WSReq1}};
+    case KAAttempts of
+        KAMax->
+            disconnect({error, keepalive_timeout}, Context);
+        _ ->
+            ok = encode_and_send({ping, <<"foo">>}, WSReq),
+            NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
+            WSReq1 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq),
+            {next_state, KAState, Context#context{wsreq=WSReq1, ka_attempts=(KAAttempts+1)}}
+    end;
 %% TODO Move Socket into #transport{} from #websocket_req{} so that we can
 %% match on it here
 handle_info({TransClosed, _Socket}, _CurrState,
@@ -365,10 +371,8 @@ handle_info({Trans, _Socket, Data},
             {ok, HState2, KeepAlive} =
                 case Handler:onconnect(WSReq1, HState0) of
                     {ok, HState1} ->
-                        case websocket_req:keepalive(WSReq1) of
-                            undefined -> {ok, HState1, infinity};
-                            KA -> {ok, HState1, KA}
-                        end;
+                        KA = websocket_req:keepalive(WSReq1),
+                        {ok, HState1, KA};
                     {ok, _HS1, KA}=Result ->
                         erlang:send_after(KA, self(), keepalive),
                         Result
@@ -421,7 +425,8 @@ handle_info(Msg, State,
 
 % Recursively handle all frames that are in the buffer;
 % If the last frame is incomplete, leave it in the buffer and wait for more.
-handle_websocket_frame(Data, #context{}=Context) ->
+handle_websocket_frame(Data, #context{}=Context0) ->
+    Context = Context0#context{ka_attempts=0},
     #context{
                handler={Handler, HState0},
                wsreq=WSReq,
@@ -500,7 +505,7 @@ handle_response({close, Payload, HandlerState}, Handler, WSReq) ->
 
 %% @doc Send http upgrade request and validate handshake response challenge
 -spec send_handshake(WSReq :: websocket_req:req(), [{string(), string()}]) ->
-    {ok, binary()}
+    ok
     | {error, term()}.
 send_handshake(WSReq, ExtraHeaders) ->
     Handshake = wsc_lib:create_handshake(WSReq, ExtraHeaders),

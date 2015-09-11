@@ -14,7 +14,8 @@
          test_control_frames/1,
          test_quick_response/1,
          test_bad_request/1,
-         test_keepalive_opt/1
+         test_keepalive_opt/1,
+         test_keepalive_timeout/1
         ]).
 
 all() ->
@@ -24,7 +25,8 @@ all() ->
      test_control_frames,
      test_quick_response,
      test_bad_request,
-     test_keepalive_opt
+     test_keepalive_opt,
+     test_keepalive_timeout
     ].
 
 init_per_suite(Config) ->
@@ -134,6 +136,16 @@ test_keepalive_opt(_) ->
     {pong, <<"foo">>} = ws_client:recv(Pid, 500),
     ws_client:stop(Pid),
     ok.
+
+test_keepalive_timeout(_) ->
+    {ok, S} = gen_tcp:listen(9090, [binary, {packet, 0}, {active, true}]),
+    process_flag(trap_exit, true),
+    {ok, C} = ws_client:start_link("ws://localhost:9090", 500),
+    receive
+        {'EXIT', C, {error, keepalive_timeout}} -> ok;
+        Other -> ct:fail({unexpected, Other})
+    end.
+
 
 short_msg() ->
     <<"hello">>.

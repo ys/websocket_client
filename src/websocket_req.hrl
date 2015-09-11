@@ -2,7 +2,7 @@
         {
          mod :: gen_tcp | ssl, %% Which module to use for transport
          name :: tcp | ssl,
-         closed :: tcp_error | ssl_error, %% These are used to pattern match
+         closed :: tcp_closed | ssl_closed, %% These are used to pattern match
          error :: tcp_error | ssl_error,  %% exact tuples in active mode
          opts :: list(term()) %% TODO I think there's a inets? type for this
         }).
@@ -14,6 +14,7 @@
           path                            :: string(),
           keepalive = infinity            :: infinity | integer(),
           keepalive_timer = undefined     :: undefined | reference(),
+          keepalive_max_attempts = 1      :: non_neg_integer(), % Set to -1 to disable
           socket                          :: inet:socket() | ssl:sslsocket(),
           transport                       :: #transport{},
           key                             :: binary(),
