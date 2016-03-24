@@ -9,4 +9,4 @@ otp_release:
   - 17.4
   - 17.5
   - 18.0
-script: make test
+script: ./rebar3 test
