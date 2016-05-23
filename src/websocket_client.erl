@@ -130,20 +130,22 @@ start_link(URL, Handler, HandlerArgs, Opts) ->
 %%  Name = atom()
 %%  GlobalName = ViaName = term()
 %%  Module = atom()
+start_link(FsmName, URL, Handler, HandlerArgs, Opts) when is_binary(URL) ->
+  start_link(FsmName, binary_to_list(URL), Handler, HandlerArgs, Opts);
 start_link(FsmName, URL, Handler, HandlerArgs, Opts) when is_list(Opts) ->
     case http_uri:parse(URL, [{scheme_defaults, [{ws,80},{wss,443}]}]) of
         {ok, {Protocol, _, Host, Port, Path, Query}} ->
             InitArgs = [Protocol, Host, Port, Path ++ Query, Handler, HandlerArgs, Opts],
             %FsmOpts = [{dbg, [trace]}],
             FsmOpts = [],
-            start_link0(FsmName, InitArgs, FsmOpts);
+            fsm_start_link(FsmName, InitArgs, FsmOpts);
         {error, _} = Error ->
             Error
     end.
 
-start_link0(undefined, Args, Options) ->
+fsm_start_link(undefined, Args, Options) ->
     gen_fsm:start_link(?MODULE, Args, Options);
-start_link0(FsmName, Args, Options) ->
+fsm_start_link(FsmName, Args, Options) ->
     gen_fsm:start_link(FsmName, ?MODULE, Args, Options).
 
 send(Client, Frame) ->
