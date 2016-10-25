@@ -1,13 +1,7 @@
 language: erlang
 otp_release:
   - R16B03
-  - R16B02
-  - 17.0
-  - 17.1
-  - 17.3
-  - 17.4
   - 17.5
-  - 18.0
-  - 18.2.1
   - 18.3
+  - 19.1
 script: ./rebar3 ct
