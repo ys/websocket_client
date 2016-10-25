@@ -9,6 +9,7 @@
                   inets
                  ]},
   {env, []},
-  {modules, []}
+  {modules, []},
+  {licenses, ["MIT"]}
  ]
 }.
