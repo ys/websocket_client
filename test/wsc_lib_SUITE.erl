@@ -32,9 +32,7 @@ init_per_suite(Config) ->
                           ]},
     WSReq = websocket_req:new(
                 Protocol, Host, Port, Path,
-                undefined, Transport,
-                wsc_lib:generate_ws_key()
-            ),
+                Transport, wsc_lib:generate_ws_key()),
     [{wsreq, WSReq} | Config].
 
 end_per_suite(_Config) -> ok.
@@ -111,4 +109,4 @@ wsreq() ->
                           ]},
     websocket_req:new(
       Protocol, Host, Port, Path,
-      undefined, Transport, wsc_lib:generate_ws_key()).
+      Transport, wsc_lib:generate_ws_key()).

@@ -3,7 +3,7 @@
 
 -include("websocket_req.hrl").
 
--export([new/7,
+-export([new/6,
          protocol/2, protocol/1,
          host/2, host/1,
          port/2, port/1,
@@ -27,15 +27,14 @@
         ]).
 
 -spec new(protocol(), string(), inet:port_number(),
-          string(), inet:socket() | ssl:sslsocket(),
-          #transport{}, binary()) -> req().
-new(Protocol, Host, Port, Path, Socket, Transport, Key) ->
+          string(), #transport{}, binary()) -> req().
+new(Protocol, Host, Port, Path, Transport, Key) ->
     #websocket_req{
      protocol = Protocol,
      host = Host,
      port = Port,
      path = Path,
-     socket = Socket,
+     socket = undefined,
      transport = Transport,
      key = Key
     }.
@@ -116,10 +115,10 @@ socket(S, Req) ->
     Req#websocket_req{socket = S}.
 
 
--spec transport(req()) -> module().
+-spec transport(req()) -> #transport{}.
 transport(#websocket_req{transport = T}) -> T.
 
--spec transport(module(), req()) -> req().
+-spec transport(#transport{}, req()) -> req().
 transport(T, Req) ->
     Req#websocket_req{transport = T}.
 
