@@ -171,8 +171,7 @@ init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
     Transport = transport(Protocol, ssl_verify(SSLVerify), SockOpts),
     WSReq = websocket_req:new(
                 Protocol, Host, Port, Path,
-                undefined, Transport,
-                wsc_lib:generate_ws_key()
+                Transport, wsc_lib:generate_ws_key()
             ),
     WSReq1 = case proplists:get_value(keepalive, Opts) of
         undefined -> WSReq;
@@ -229,8 +228,6 @@ ssl_verify({verify_fun, _}=Verify) ->
 
 -spec terminate(Reason :: term(), state_name(), #context{}) -> ok.
 %% TODO Use Reason!!
-terminate(_Reason, _StateName, #context{wsreq=undefined}) ->
-    ok;
 terminate(_Reason, _StateName,
           #context{
              transport=T,
