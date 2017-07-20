@@ -62,6 +62,8 @@
     {ok, state()}
     % Immediately attempt to reconnect.
     | {reconnect, state()}
+    % Reconnect after interval.
+    | {reconnect, non_neg_integer(), state()}
     % Shut the process down cleanly.
     | {close, reason(), state()}.
 
@@ -100,6 +102,7 @@
          handler   :: {module(), HState :: term()},
          buffer = <<>> :: binary(),
          reconnect :: boolean(),
+         reconnect_tref = undefined :: undefined | reference(),
          ka_attempts = 0 :: non_neg_integer()
         }).
 
@@ -247,6 +250,7 @@ connect(#context{
            target={_Protocol, Host, Port, _Path},
            ka_attempts=KAs
           }=Context) ->
+    Context2 = maybe_cancel_reconnect(Context),
     case (T#transport.mod):connect(Host, Port, T#transport.opts, 6000) of
         {ok, Socket} ->
             WSReq1 = websocket_req:socket(Socket, WSReq0),
@@ -254,17 +258,17 @@ connect(#context{
                 ok ->
                     case websocket_req:keepalive(WSReq1) of
                         infinity ->
-                            {next_state, handshaking, Context#context{ wsreq=WSReq1}};
+                            {next_state, handshaking, Context2#context{ wsreq=WSReq1}};
                         KeepAlive ->
                             NewTimer = erlang:send_after(KeepAlive, self(), keepalive),
                             WSReq2 = websocket_req:set([{keepalive_timer, NewTimer}], WSReq1),
-                            {next_state, handshaking, Context#context{ wsreq=WSReq2, ka_attempts=(KAs+1)}}
+                            {next_state, handshaking, Context2#context{ wsreq=WSReq2, ka_attempts=(KAs+1)}}
                     end;
                 Error ->
-                    disconnect(Error, Context)
+                    disconnect(Error, Context2)
             end;
         {error,_}=Error ->
-            disconnect(Error, Context)
+            disconnect(Error, Context2)
     end.
 
 disconnect(Reason, #context{
@@ -278,8 +282,8 @@ disconnect(Reason, #context{
             ok = gen_fsm:send_event(self(), connect),
             {next_state, disconnected, Context#context{handler={Handler, HState1}}};
         {reconnect, Interval, HState1} ->
-            gen_fsm:send_event_after(Interval, connect),
-            {next_state, disconnected, Context#context{handler={Handler, HState1}}};
+            Tref = gen_fsm:send_event_after(Interval, connect),
+            {next_state, disconnected, Context#context{handler={Handler, HState1}, reconnect_tref=Tref}};
         {close, Reason1, HState1} ->
             ok = websocket_close(WSReq0, Handler, HState1, Reason1),
             {stop, Reason1, Context#context{handler={Handler, HState1}}}
@@ -302,6 +306,10 @@ disconnected(connect, _From, Context0) ->
 disconnected(_Event, _From, Context) ->
     {reply, {error, unhandled_sync_event}, disconnected, Context}.
 
+connected(connect, Context) ->
+    %% We didn't cancel the reconnect_tref timer before the event was
+    %% sent
+    {next_state, connected, Context};
 connected({cast, Frame}, #context{wsreq=WSReq}=Context) ->
     case encode_and_send(Frame, WSReq) of
         ok ->
@@ -555,3 +563,10 @@ websocket_close(WSReq, Handler, HandlerState, Reason) ->
           erlang:get_stacktrace()])
     end.
 %% TODO {stop, Reason, Context}
+
+maybe_cancel_reconnect(Context=#context{reconnect_tref=undefined}) ->
+    Context;
+maybe_cancel_reconnect(Context=#context{reconnect_tref=Tref}) when is_reference(Tref) ->
+    gen_fsm:cancel_timer(Tref),
+    Context#context{reconnect_tref=undefined}.
+
