@@ -15,7 +15,8 @@
          test_quick_response/1,
          test_bad_request/1,
          test_keepalive_opt/1,
-         test_keepalive_timeout/1
+         test_keepalive_timeout/1,
+         test_reconnect_after/1
         ]).
 
 all() ->
@@ -26,7 +27,8 @@ all() ->
      test_quick_response,
      test_bad_request,
      test_keepalive_opt,
-     test_keepalive_timeout
+     test_keepalive_timeout,
+     test_reconnect_after
     ].
 
 init_per_suite(Config) ->
@@ -138,7 +140,7 @@ test_keepalive_opt(_) ->
     ok.
 
 test_keepalive_timeout(_) ->
-    {ok, S} = gen_tcp:listen(9090, [binary, {packet, 0}, {active, true}]),
+    {ok, _S} = gen_tcp:listen(9090, [binary, {packet, 0}, {active, true}]),
     process_flag(trap_exit, true),
     {ok, C} = ws_client:start_link("ws://localhost:9090", 500),
     receive
@@ -146,6 +148,14 @@ test_keepalive_timeout(_) ->
         Other -> ct:fail({unexpected, Other})
     end.
 
+test_reconnect_after(_) ->
+    {ok, Pid} = reconnect_interval_client:start_link("ws://localhost:8080"),
+    receive {ok, Pid} -> ok after 500 -> ct:fail(timeout) end,
+    echo_server:stop(),
+    echo_server:start(),
+    receive {ok, Pid} -> ok after 1500 -> ct:fail(timeout) end,
+    reconnect_interval_client:stop(Pid),
+    ok.
 
 short_msg() ->
     <<"hello">>.
