@@ -2,6 +2,8 @@
 
 [![Build Status](https://travis-ci.org/sanmiguel/websocket_client.svg?branch=master)](https://travis-ci.org/sanmiguel/websocket_client)
 
+[![Coverage Status](https://coveralls.io/repos/github/sanmiguel/websocket_client/badge.svg?branch=master)](https://coveralls.io/github/sanmiguel/websocket_client?branch=master)
+
 ## Existing features
 
 1. Client to Server Masking
