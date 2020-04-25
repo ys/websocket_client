@@ -458,7 +458,7 @@ handle_info(Msg,
                                      wsreq=WSReqN,
                                      handler={Handler, HStateN}}}
             end
-    catch Class:Reason ->
+    catch Class:Reason:StackTrace ->
         %% TODO Maybe a function_clause catch here to allow
         %% not having to have a catch-all clause in websocket_info CB?
         error_logger:error_msg(
@@ -468,7 +468,7 @@ handle_info(Msg,
           "** Handler state was ~p~n"
           "** Stacktrace: ~p~n~n",
           [Handler, websocket_info, 3, Class, Reason, Msg, HState0,
-           erlang:get_stacktrace()]),
+           StackTrace]),
         websocket_close(WSReq, Handler, HState0, Reason),
         {stop, Reason, Context}
     end.
@@ -514,7 +514,7 @@ handle_websocket_frame(Data, #context{}=Context0) ->
                                          wsreq=WSReqN2,
                                          handler={Handler, HStateN2}}}
                 end
-            catch Class:Reason ->
+            catch Class:Reason:StackTrace ->
               error_logger:error_msg(
                 "** Websocket client ~p terminating in ~p/~p~n"
                 "   for the reason ~p:~p~n"
@@ -522,7 +522,7 @@ handle_websocket_frame(Data, #context{}=Context0) ->
                 "** Handler state was ~p~n"
                 "** Stacktrace: ~p~n~n",
                 [Handler, websocket_handle, 3, Class, Reason, Message, HState0,
-                  erlang:get_stacktrace()]),
+                  StackTrace]),
               {stop, Reason, Context#context{ wsreq=WSReqN }}
             end;
         {recv, WSReqN, BufferN} ->
@@ -578,13 +578,13 @@ encode_and_send(Frame, WSReq) ->
 websocket_close(WSReq, Handler, HandlerState, Reason) ->
     try
         Handler:websocket_terminate(Reason, WSReq, HandlerState)
-    catch Class:Reason2 ->
+    catch Class:Reason2:StackTrace ->
       error_logger:error_msg(
         "** Websocket handler ~p terminating in ~p/~p~n"
         "   for the reason ~p:~p~n"
         "** Handler state was ~p~n"
         "** Stacktrace: ~p~n~n",
         [Handler, websocket_terminate, 3, Class, Reason2, HandlerState,
-          erlang:get_stacktrace()])
+          StackTrace])
     end.
 %% TODO {stop, Reason, Context}
