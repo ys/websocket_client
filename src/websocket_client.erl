@@ -160,7 +160,7 @@ callback_mode() ->
 
 -spec init(list(any())) ->
     {ok, state_name(), #context{}}
-    | {ok, state_name(), #context{}, gen_statem:action()}.
+    | {ok, state_name(), #context{}, [{next_event, internal, connect}]}.
     %% NB DO NOT try to use Timeout to do keepalive.
 init([Protocol, Host, Port, Path, Handler, HandlerArgs, Opts]) ->
     {Connect, Reconnect, HState} =
