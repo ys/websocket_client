@@ -2,7 +2,7 @@
              [{description,"Erlang websocket client"},
               {vsn,"1.4.0"},
               {registered,[]},
-              {applications,[ssl,crypto,inets]},
+              {applications,[kernel,stdlib,ssl,crypto,inets]},
               {env,[]},
               {modules,[]},
               {licenses,["MIT"]}]}.
