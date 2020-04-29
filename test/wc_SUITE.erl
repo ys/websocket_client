@@ -137,7 +137,7 @@ test_bad_request(_) ->
 test_keepalive_opt(_) ->
     {ok, Pid} = ws_client:start_link("ws://localhost:8080", 100),
     receive {ok, Pid} -> ok after 500 -> ct:fail(timeout) end,
-    {pong, <<"foo">>} = ws_client:recv(Pid, 500),
+    {pong, <<>>} = ws_client:recv(Pid, 500),
     ws_client:stop(Pid),
     ok.
 
