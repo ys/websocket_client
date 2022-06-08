@@ -131,15 +131,37 @@ start_link(URL, Handler, HandlerArgs, Opts) ->
 start_link(FsmName, URL, Handler, HandlerArgs, Opts) when is_binary(URL) ->
   start_link(FsmName, binary_to_list(URL), Handler, HandlerArgs, Opts);
 start_link(FsmName, URL, Handler, HandlerArgs, Opts) when is_list(Opts) ->
-    case http_uri:parse(URL, [{scheme_defaults, [{ws,80},{wss,443}]}]) of
-        {ok, {Protocol, _, Host, Port, Path, Query}} ->
-            InitArgs = [Protocol, Host, Port, Path ++ Query, Handler, HandlerArgs, Opts],
+    case uri_string:parse(URL) of
+        #{scheme := Scheme, host := Host} = Parsed ->
+            Port = maps:get(port, Parsed, default_scheme_port(Scheme)),
+            FormattedPath = path(Parsed) ++ query_string(Parsed),
+            InitArgs = [list_to_atom(Scheme), Host, Port, FormattedPath, Handler, HandlerArgs, Opts],
             % FsmOpts = [{debug, [log, trace]}],
             FsmOpts = [],
             fsm_start_link(FsmName, InitArgs, FsmOpts);
-        {error, _} = Error ->
+
+        {error, _, _} = Error ->
             Error
     end.
+
+%% http_uri presumed a path of "/" even
+%% when no path was provided.
+path(#{path := []}) ->
+    "/";
+path(#{path := Path}) ->
+    Path.
+
+%% http_uri prefixed the query string while
+%% string_uri does not.
+query_string(#{query := Query}) ->
+    "?" ++ Query;
+query_string(_) ->
+    "".
+
+default_scheme_port("ws") ->
+    80;
+default_scheme_port("wss") ->
+    443.
 
 fsm_start_link(undefined, Args, Options) ->
     gen_statem:start_link(?MODULE, Args, Options);
