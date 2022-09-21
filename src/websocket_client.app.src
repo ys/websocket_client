@@ -6,6 +6,6 @@
               {env,[]},
               {modules,[]},
               {links, [
-                {"Github", "https://github.com/sanmiguel/websocket_client"},
+                {"Github", "https://github.com/sanmiguel/websocket_client"}
               ]},
               {licenses,["MIT"]}]}.
