@@ -116,5 +116,5 @@ websocket_info(stop, _, State) ->
     {close, <<>>, State}.
 
 websocket_terminate(Close, _, State) ->
-    ct:pal("Websocket closed with frame ~p and state ~p", [Close, State]),
+    ct:pal("Websocket closed with frame ~p and state ~p~n", [Close, State]),
     ok.
