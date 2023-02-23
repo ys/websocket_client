@@ -33,7 +33,7 @@ start() ->
 stop() ->
     cowboy:stop_listener(echo_listener).
 
-init(Req, Opts) ->
+init(Req, _Opts) ->
     case maps:from_list(cowboy_req:parse_qs(Req)) of
         #{ <<"code">> := Code } ->
             IntegerCode = list_to_integer(binary_to_list(Code)),
