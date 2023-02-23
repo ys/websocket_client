@@ -1,6 +1,6 @@
 -module(echo_server).
 
--behaviour(cowboy_websocket_handler).
+% -behaviour(cowboy_websocket_handler).
 
 -export([
          start/0,
@@ -8,14 +8,14 @@
         ]).
 
 -export([
-         init/3,
-         websocket_init/3,
-         websocket_handle/3,
-         websocket_info/3,
-         websocket_terminate/3
+         init/2,
+         websocket_init/1,
+         websocket_handle/2,
+         websocket_info/2,
+         websocket_terminate/2
         ]).
 
--record(state, {}).
+-record(state, { stopcode, init_text }).
 
 start() ->
     ct:pal("Starting ~p.~n", [?MODULE]),
@@ -23,52 +23,52 @@ start() ->
                                              {"/hello", ?MODULE, []},
                                              {'_', ?MODULE, []}
                                             ]}]),
-    {ok, _} = cowboy:start_http(echo_listener, 2, [
-                                                   {nodelay, true},
-                                                   {port, 8080},
-                                                   {max_connections, 100}
-                                                  ],
-                                [{env, [{dispatch, Dispatch}]}]).
+    {ok, _} = cowboy:start_clear(echo_listener, [
+                                                 {nodelay, true},
+                                                 {port, 8080},
+                                                 {max_connections, 100}
+                                                ],
+                                 #{env => #{dispatch => Dispatch}}).
 
 stop() ->
     cowboy:stop_listener(echo_listener).
 
-init(_, _Req, _Opts) ->
-    {upgrade, protocol, cowboy_websocket}.
-
-websocket_init(_Transport, Req, _Opts) ->
-    case cowboy_req:qs_val(<<"code">>, Req) of
-        {undefined, Req2} ->
-            case cowboy_req:qs_val(<<"q">>, Req2) of
-                {undefined, Req3} ->
-                    {ok, Req3, #state{}};
-                {Text, Req3} ->
-                    self() ! {send, Text},
-                    {ok, Req3, #state{}}
-            end;
-        {Code, Req2} ->
+init(Req, _Opts) ->
+    case maps:from_list(cowboy_req:parse_qs(Req)) of
+        #{ <<"code">> := Code } ->
             IntegerCode = list_to_integer(binary_to_list(Code)),
-            ct:pal("~p shuting down on init using '~p' status code~n", [?MODULE, IntegerCode]),
-            {ok, Req3} = cowboy_req:reply(IntegerCode, Req2),
-            {shutdown, Req3}
+            Req2 = cowboy_req:reply(IntegerCode, Req),
+            {cowboy_websocket, Req2, #state{ stopcode = IntegerCode }};
+        #{ <<"q">> := Text } ->
+            {cowboy_websocket, Req, #state{ init_text = Text }};
+        _ ->
+            {cowboy_websocket, Req, #state{}}
     end.
 
-websocket_handle({ping, Payload}=_Frame, Req, State) ->
-    ct:pal("~p pingpong with size ~p~n", [?MODULE, byte_size(Payload)]),
-    {ok, Req, State};
-websocket_handle({Type, Payload}=Frame, Req, State) ->
-    ct:pal("~p replying with ~p of size ~p~n", [?MODULE, Type, byte_size(Payload)]),
-    {reply, Frame, Req, State}.
+websocket_init(#state{stopcode = Code}=State) when is_integer(Code) ->
+    ct:pal("~p shuting down on init using '~p' status code~n", [?MODULE, Code]),
+    {[{shutdown_reason, "Code"}], State};
+websocket_init(#state{init_text = Text}=State) when is_binary(Text) ->
+    {[{text, Text}], State};
+websocket_init(State) ->
+    {[], State}.
 
-websocket_info({send, Text}, Req, State) ->
+websocket_handle({ping, Payload}=_Frame, State) ->
+    ct:pal("~p pingpong with size ~p~n", [?MODULE, byte_size(Payload)]),
+    {ok, State};
+websocket_handle({Type, Payload}=Frame, State) ->
+    ct:pal("~p replying with ~p of size ~p~n", [?MODULE, Type, byte_size(Payload)]),
+    {reply, Frame, State}.
+
+websocket_info({send, Text}, State) ->
     timer:sleep(1),
     ct:pal("~p sent frame of size ~p ~n", [?MODULE, byte_size(Text)]),
-    {reply, {text, Text}, Req, State};
+    {reply, {text, Text}, State};
 
-websocket_info(_Msg, Req, State) ->
+websocket_info(_Msg, State) ->
     ct:pal("~p received OoB msg: ~p~n", [?MODULE, _Msg]),
-    {ok, Req, State}.
+    {ok, State}.
 
-websocket_terminate(Reason, _Req, _State) ->
+websocket_terminate(Reason, _State) ->
     ct:pal("~p terminating with reason ~p~n", [?MODULE, Reason]),
     ok.
