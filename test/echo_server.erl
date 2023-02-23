@@ -9,13 +9,13 @@
 
 -export([
          init/2,
-         websocket_init/3,
+         websocket_init/1,
          websocket_handle/2,
          websocket_info/2,
          websocket_terminate/2
         ]).
 
--record(state, {}).
+-record(state, { stopcode, init_text }).
 
 start() ->
     ct:pal("Starting ~p.~n", [?MODULE]),
@@ -34,24 +34,24 @@ stop() ->
     cowboy:stop_listener(echo_listener).
 
 init(Req, Opts) ->
-    {cowboy_websocket, Req, Opts}.
-
-websocket_init(_Transport, Req, _Opts) ->
-    case cowboy_req:qs_val(<<"code">>, Req) of
-        {undefined, Req2} ->
-            case cowboy_req:qs_val(<<"q">>, Req2) of
-                {undefined, Req3} ->
-                    {ok, Req3, #state{}};
-                {Text, Req3} ->
-                    self() ! {send, Text},
-                    {ok, Req3, #state{}}
-            end;
-        {Code, Req2} ->
+    case maps:from_list(cowboy_req:parse_qs(Req)) of
+        #{ <<"code">> := Code } ->
             IntegerCode = list_to_integer(binary_to_list(Code)),
-            ct:pal("~p shuting down on init using '~p' status code~n", [?MODULE, IntegerCode]),
-            {ok, Req3} = cowboy_req:reply(IntegerCode, Req2),
-            {shutdown, Req3}
+            Req2 = cowboy_req:reply(IntegerCode, Req),
+            {cowboy_websocket, Req2, #state{ stopcode = IntegerCode }};
+        #{ <<"q">> := Text } ->
+            {cowboy_websocket, Req, #state{ init_text = Text }};
+        _ ->
+            {cowboy_websocket, Req, #state{}}
     end.
+
+websocket_init(#state{stopcode = Code}=State) when is_integer(Code) ->
+    ct:pal("~p shuting down on init using '~p' status code~n", [?MODULE, Code]),
+    {[{shutdown_reason, "Code"}], State};
+websocket_init(#state{init_text = Text}=State) when is_binary(Text) ->
+    {[{text, Text}], State};
+websocket_init(State) ->
+    {[], State}.
 
 websocket_handle({ping, Payload}=_Frame, State) ->
     ct:pal("~p pingpong with size ~p~n", [?MODULE, byte_size(Payload)]),
