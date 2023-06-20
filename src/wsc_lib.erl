@@ -149,7 +149,12 @@ decode_frame(WSReq, Opcode, Len, Data, Buffer) ->
             %% Append to previously existing continuation payloads and continue
             Continuation1 = << Continuation/binary, FullPayload/binary >>,
             WSReq1 = websocket_req:continuation(Continuation1, WSReq),
-            decode_frame(WSReq1, Rest);
+            WSReq2 = case websocket_req:remaining(WSReq1) of
+                undefined -> WSReq1;
+                Remaining ->
+                    websocket_req:remaining(Remaining - Len, WSReq1)
+            end,
+            decode_frame(WSReq2, Rest);
         %% Terminate continuation frame sequence with non-control frame
         _ when Opcode < 8, Continuation =/= undefined, Fin == 1 ->
             DefragPayload = << Continuation/binary, FullPayload/binary >>,
